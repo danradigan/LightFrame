@@ -10,89 +10,76 @@ import Combine
 class AppState: ObservableObject {
 
     // MARK: - Collections
-    // The list of named folder presets the user has set up
     @Published var collections: [Collection] = []
-
-    // The currently selected collection in the sidebar
     @Published var selectedCollection: Collection?
 
     // MARK: - TVs
-    // All TVs the user has added
     @Published var tvs: [TV] = []
-
-    // The currently active TV
     @Published var selectedTV: TV?
 
     // MARK: - Photo Selection
-    // The set of photo IDs currently selected in the grid
-    // Using a Set means we can quickly check if a photo is selected
     @Published var selectedPhotoIDs: Set<UUID> = []
-
-    // The last photo tapped — drives the right panel detail view
     @Published var lastTappedPhoto: Photo?
 
     // MARK: - TV-Only Items
-    // Photos on the TV that don't exist in any local collection
     @Published var tvOnlyItems: [TVOnlyItem] = []
 
     // MARK: - Grid Filter
-    // Controls which tab is active in the photo grid
     @Published var gridFilter: GridFilter = .all
 
     // MARK: - Matte Filters
-    // Active filters in the sidebar — empty set means "show all"
     @Published var activeStyleFilters: Set<MatteStyle> = []
     @Published var activeColorFilters: Set<MatteColor> = []
 
     // MARK: - Upload State
     @Published var isUploading: Bool = false
-    @Published var uploadProgress: Double = 0       // 0.0 to 1.0
-    @Published var uploadCurrent: Int = 0           // e.g. 12
-    @Published var uploadTotal: Int = 0             // e.g. 47
-    @Published var uploadTimeRemaining: String = "" // e.g. "2 min remaining"
-    @Published var uploadError: String?             // Non-nil if something went wrong
+    @Published var uploadProgress: Double = 0
+    @Published var uploadCurrent: Int = 0
+    @Published var uploadTotal: Int = 0
+    @Published var uploadTimeRemaining: String = ""
+    @Published var uploadError: String?
+
+    // MARK: - Scan State
+    @Published var isScanning: Bool = false
+    @Published var scanningCollectionID: UUID? = nil
 
     // MARK: - Thumbnail Size
-    // Controls the grid thumbnail size via the bottom-right slider
-    // Range: 100 (small) to 300 (large), default 160
     @Published var thumbnailSize: CGFloat = 160
 
-    // MARK: - Persistence
-    // Path to the JSON file that stores collections and TVs between launches
+    // MARK: - Persistence URL
     private let storageURL: URL = {
         let appSupport = FileManager.default.urls(
             for: .applicationSupportDirectory,
             in: .userDomainMask
         ).first!
         let dir = appSupport.appendingPathComponent("LightFrame")
-        try? FileManager.default.createDirectory(
-            at: dir,
-            withIntermediateDirectories: true
-        )
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir.appendingPathComponent("appstate.json")
     }()
 
     // MARK: - Init
-    init() {
-        load()
-    }
+    init() { load() }
 
     // MARK: - Collection Management
 
-    /// Add a new collection pointing to a folder on disk
+    /// Add a new collection and immediately auto-scan it
     func addCollection(name: String, folderURL: URL) {
+        let bookmark = try? folderURL.bookmarkData(
+            options: .withSecurityScope,
+            includingResourceValuesForKeys: nil,
+            relativeTo: nil
+        )
         let collection = Collection(
-            id: UUID(),
-            name: name,
-            folderURL: folderURL,
-            photos: []
+            id: UUID(), name: name,
+            folderURL: folderURL, bookmarkData: bookmark, photos: []
         )
         collections.append(collection)
         selectedCollection = collection
         save()
+        // Auto-scan immediately so photos appear without a manual Scan press
+        Task { await scanSelectedCollection() }
     }
 
-    /// Remove a collection by ID
     func removeCollection(_ collection: Collection) {
         collections.removeAll { $0.id == collection.id }
         if selectedCollection?.id == collection.id {
@@ -101,112 +88,146 @@ class AppState: ObservableObject {
         save()
     }
 
-    /// Rename a collection
     func renameCollection(_ collection: Collection, to name: String) {
         guard let index = collections.firstIndex(where: { $0.id == collection.id }) else { return }
         collections[index].name = name
-        if selectedCollection?.id == collection.id {
-            selectedCollection = collections[index]
-        }
+        if selectedCollection?.id == collection.id { selectedCollection = collections[index] }
         save()
     }
 
-    /// Update the photos inside a collection after a scan
     func updatePhotos(_ photos: [Photo], in collection: Collection) {
         guard let index = collections.firstIndex(where: { $0.id == collection.id }) else { return }
         collections[index].photos = photos
-        if selectedCollection?.id == collection.id {
-            selectedCollection = collections[index]
-        }
+        if selectedCollection?.id == collection.id { selectedCollection = collections[index] }
         save()
+    }
+
+    // MARK: - Smart Single-Photo Matte Update
+    /// Updates just one photo's matte and thumbnail in memory.
+    /// Much faster than re-scanning the entire collection for a single change.
+    func updateMatte(_ matte: Matte, for photo: Photo, newData: Data? = nil) {
+        guard let colIndex = collections.firstIndex(where: { col in
+                  col.photos.contains(where: { $0.id == photo.id })
+              }),
+              let photoIndex = collections[colIndex].photos.firstIndex(where: { $0.id == photo.id })
+        else { return }
+
+        collections[colIndex].photos[photoIndex].matte = matte
+
+        if let data = newData {
+            collections[colIndex].photos[photoIndex].thumbnailData = data
+        }
+
+        if selectedCollection?.id == collections[colIndex].id {
+            selectedCollection = collections[colIndex]
+        }
+
+        if lastTappedPhoto?.id == photo.id {
+            lastTappedPhoto = collections[colIndex].photos[photoIndex]
+        }
+
+        save()
+    }
+
+    // MARK: - Scan Collection
+    /// Scans the selected collection's folder and updates its photos.
+    func scanSelectedCollection() async {
+        guard let collection = selectedCollection else { return }
+
+        isScanning = true
+        scanningCollectionID = collection.id
+        defer {
+            isScanning = false
+            scanningCollectionID = nil
+        }
+
+        var resolvedURL = collection.folderURL
+        if let bookmarkData = collection.bookmarkData {
+            var isStale = false
+            if let url = try? URL(
+                resolvingBookmarkData: bookmarkData,
+                options: .withSecurityScope,
+                relativeTo: nil,
+                bookmarkDataIsStale: &isStale
+            ) { resolvedURL = url }
+        }
+
+        let accessGranted = resolvedURL.startAccessingSecurityScopedResource()
+
+        let syncStore: SyncStore
+        if let tv = selectedTV {
+            syncStore = SyncStoreManager.shared.store(for: tv)
+        } else {
+            syncStore = SyncStore(tvID: UUID())
+        }
+
+        let photos = await PhotoScanner.scan(
+            folderURL: resolvedURL,
+            existingPhotos: collection.photos,
+            syncStore: syncStore
+        )
+
+        if accessGranted { resolvedURL.stopAccessingSecurityScopedResource() }
+        updatePhotos(photos, in: collection)
     }
 
     // MARK: - TV Management
 
-    /// Add a new TV
     func addTV(name: String, ipAddress: String) {
-        let tv = TV(
-            id: UUID(),
-            name: name,
-            ipAddress: ipAddress,
-            token: nil,
-            isReachable: false
-        )
+        let tv = TV(id: UUID(), name: name, ipAddress: ipAddress, token: nil, isReachable: false)
         tvs.append(tv)
-        if selectedTV == nil {
-            selectedTV = tv
-        }
+        if selectedTV == nil { selectedTV = tv }
         save()
     }
 
-    /// Remove a TV by ID
     func removeTV(_ tv: TV) {
         tvs.removeAll { $0.id == tv.id }
-        if selectedTV?.id == tv.id {
-            selectedTV = tvs.first
-        }
+        if selectedTV?.id == tv.id { selectedTV = tvs.first }
         save()
     }
 
-    /// Update a TV's token after successful pairing
     func updateToken(_ token: String, for tv: TV) {
         guard let index = tvs.firstIndex(where: { $0.id == tv.id }) else { return }
         tvs[index].token = token
-        if selectedTV?.id == tv.id {
-            selectedTV = tvs[index]
-        }
+        if selectedTV?.id == tv.id { selectedTV = tvs[index] }
         save()
     }
 
-    /// Update a TV's reachability status
     func updateReachability(_ reachable: Bool, for tv: TV) {
         guard let index = tvs.firstIndex(where: { $0.id == tv.id }) else { return }
         tvs[index].isReachable = reachable
-        if selectedTV?.id == tv.id {
-            selectedTV = tvs[index]
-        }
-        // Don't save here — reachability is transient, not persisted
+        if selectedTV?.id == tv.id { selectedTV = tvs[index] }
     }
 
-    /// Update a TV's content ID for a photo after upload
     func setContentID(_ contentID: String, for photo: Photo, in collection: Collection) {
         guard let colIndex = collections.firstIndex(where: { $0.id == collection.id }),
               let photoIndex = collections[colIndex].photos.firstIndex(where: { $0.id == photo.id })
         else { return }
         collections[colIndex].photos[photoIndex].tvContentID = contentID
         collections[colIndex].photos[photoIndex].isOnTV = true
-        if selectedCollection?.id == collection.id {
-            selectedCollection = collections[colIndex]
-        }
+        if selectedCollection?.id == collection.id { selectedCollection = collections[colIndex] }
         save()
     }
 
     // MARK: - Photo Selection
 
-    /// Select a single photo (clears previous selection)
     func selectPhoto(_ photo: Photo) {
         selectedPhotoIDs = [photo.id]
         lastTappedPhoto = photo
     }
 
-    /// Toggle a photo in/out of the selection (for Cmd+click)
     func togglePhotoSelection(_ photo: Photo) {
         if selectedPhotoIDs.contains(photo.id) {
             selectedPhotoIDs.remove(photo.id)
-            if lastTappedPhoto?.id == photo.id {
-                lastTappedPhoto = nil
-            }
+            if lastTappedPhoto?.id == photo.id { lastTappedPhoto = nil }
         } else {
             selectedPhotoIDs.insert(photo.id)
             lastTappedPhoto = photo
         }
     }
 
-    /// Select a contiguous range of photos (for Shift+click)
     func selectRange(to photo: Photo, in photos: [Photo]) {
         guard let endIndex = photos.firstIndex(where: { $0.id == photo.id }) else { return }
-
-        // Find the anchor — the last tapped photo, or default to first
         let startIndex: Int
         if let anchor = lastTappedPhoto,
            let anchorIndex = photos.firstIndex(where: { $0.id == anchor.id }) {
@@ -214,44 +235,32 @@ class AppState: ObservableObject {
         } else {
             startIndex = 0
         }
-
         let range = min(startIndex, endIndex)...max(startIndex, endIndex)
-        let rangeIDs = photos[range].map { $0.id }
-        selectedPhotoIDs.formUnion(rangeIDs)
+        selectedPhotoIDs.formUnion(photos[range].map { $0.id })
         lastTappedPhoto = photo
     }
 
-    /// Clear all selected photos
     func clearSelection() {
         selectedPhotoIDs = []
         lastTappedPhoto = nil
     }
 
-    /// Select all photos in the current filtered view
     func selectAll(photos: [Photo]) {
         selectedPhotoIDs = Set(photos.map { $0.id })
     }
 
     // MARK: - Filtered Photos
-    // Returns the photos to show in the grid based on active tab and filters
 
     var filteredPhotos: [Photo] {
         guard let collection = selectedCollection else { return [] }
-
-        // Start with all photos in the collection
         var photos = collection.photos
 
-        // Apply grid tab filter
         switch gridFilter {
-        case .all:
-            break // Show everything
-        case .onTV:
-            photos = photos.filter { $0.isOnTV }
-        case .notOnTV:
-            photos = photos.filter { !$0.isOnTV }
+        case .all: break
+        case .onTV: photos = photos.filter { $0.isOnTV }
+        case .notOnTV: photos = photos.filter { !$0.isOnTV }
         }
 
-        // Apply matte style filter
         if !activeStyleFilters.isEmpty {
             photos = photos.filter { photo in
                 guard let matte = photo.matte else { return false }
@@ -259,7 +268,6 @@ class AppState: ObservableObject {
             }
         }
 
-        // Apply matte color filter
         if !activeColorFilters.isEmpty {
             photos = photos.filter { photo in
                 guard let color = photo.matte?.color else { return false }
@@ -270,8 +278,6 @@ class AppState: ObservableObject {
         return photos
     }
 
-    // MARK: - Selected Photos for Upload/Delete
-    // The actual Photo objects that are currently selected
     var selectedPhotos: [Photo] {
         guard let collection = selectedCollection else { return [] }
         return collection.photos.filter { selectedPhotoIDs.contains($0.id) }
@@ -279,40 +285,57 @@ class AppState: ObservableObject {
 
     // MARK: - Persistence
 
-    /// Save collections and TVs to disk as JSON
     func save() {
-        // We save a simplified version — just the data, not the computed properties
         let data = PersistencePayload(collections: collections, tvs: tvs)
         if let encoded = try? JSONEncoder().encode(data) {
             try? encoded.write(to: storageURL)
         }
     }
 
-    /// Load collections and TVs from disk on launch
     func load() {
         guard let data = try? Data(contentsOf: storageURL),
               let decoded = try? JSONDecoder().decode(PersistencePayload.self, from: data)
         else { return }
 
-        collections = decoded.collections
+        collections = decoded.collections.map { collection in
+            var resolved = collection
+            if let bookmarkData = collection.bookmarkData {
+                var isStale = false
+                if let url = try? URL(
+                    resolvingBookmarkData: bookmarkData,
+                    options: .withSecurityScope,
+                    relativeTo: nil,
+                    bookmarkDataIsStale: &isStale
+                ) {
+                    resolved.folderURL = url
+                    if isStale {
+                        resolved.bookmarkData = try? url.bookmarkData(
+                            options: .withSecurityScope,
+                            includingResourceValuesForKeys: nil,
+                            relativeTo: nil
+                        )
+                    }
+                }
+            }
+            return resolved
+        }
+
         tvs = decoded.tvs
         selectedCollection = collections.first
         selectedTV = tvs.first
+        save()
     }
 }
 
 // MARK: - Grid Filter
-// The three tabs above the photo grid
 enum GridFilter: String, CaseIterable {
-    case all      = "All"
-    case onTV     = "On TV"
-    case notOnTV  = "Not on TV"
-
+    case all     = "All"
+    case onTV    = "On TV"
+    case notOnTV = "Not on TV"
     var displayName: String { rawValue }
 }
 
 // MARK: - Persistence Payload
-// A simple wrapper so we can encode/decode AppState to JSON
 private struct PersistencePayload: Codable {
     var collections: [Collection]
     var tvs: [TV]

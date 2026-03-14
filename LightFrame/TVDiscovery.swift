@@ -3,165 +3,160 @@ import Combine
 import Network
 
 // MARK: - TVDiscovery
-// Finds Samsung Frame TVs on the local network using SSDP
-// (Simple Service Discovery Protocol).
-//
-// SSDP works by sending a UDP broadcast to 239.255.255.250:1900.
-// Samsung TVs that hear it respond with their location URL,
-// which we fetch to get the TV's name and model number.
+// Discovers Samsung Frame TVs on the local network by scanning
+// the current subnet and querying each IP on port 8001.
+// This is more reliable than SSDP for Samsung TVs.
 @MainActor
 class TVDiscovery: ObservableObject {
 
     // MARK: - Discovered TV
     struct DiscoveredTV: Identifiable, Equatable {
         let id = UUID()
-        let name: String        // e.g. "Samsung The Frame (55)"
+        let name: String        // e.g. "Buena Vista"
         let ipAddress: String   // e.g. "192.168.86.25"
-        let modelName: String   // e.g. "QN55LS03B"
+        let modelName: String   // e.g. "QN75LS03BDFXZA"
     }
 
     // MARK: - Published State
     @Published var discoveredTVs: [DiscoveredTV] = []
     @Published var isSearching: Bool = false
+    @Published var scanProgress: Double = 0  // 0.0 to 1.0
 
-    // MARK: - Private
-    private var connection: NWConnection?
     private var searchTask: Task<Void, Never>?
 
-    // SSDP constants — these are part of the UPnP standard
-    private let multicastAddress = "239.255.255.250"
-    private let ssdpPort: UInt16 = 1900
-
-    // The M-SEARCH message targeting Samsung remote control receivers
-    private var searchMessage: String {
-        "M-SEARCH * HTTP/1.1\r\n" +
-        "HOST: 239.255.255.250:1900\r\n" +
-        "MAN: \"ssdp:discover\"\r\n" +
-        "MX: 3\r\n" +
-        "ST: urn:samsung.com:device:RemoteControlReceiver:1\r\n" +
-        "\r\n"
-    }
-
     // MARK: - Start Search
-    /// Broadcasts an SSDP search and collects responses for 5 seconds.
+    /// Scans the local subnet for Samsung Frame TVs using the REST API on port 8001.
     func startSearch() async {
         guard !isSearching else { return }
         discoveredTVs = []
+        scanProgress = 0
         isSearching = true
-        print("🔍 TVDiscovery: Starting SSDP search...")
+        print("🔍 TVDiscovery: Starting subnet scan...")
 
         searchTask = Task {
-            sendSSDPBroadcast()
-            // Wait 5 seconds for TV responses to arrive
-            try? await Task.sleep(nanoseconds: 5_000_000_000)
+            await scanSubnet()
             isSearching = false
-            print("🔍 TVDiscovery: Found \(discoveredTVs.count) TV(s)")
+            scanProgress = 1.0
+            print("🔍 TVDiscovery: Scan complete — found \(discoveredTVs.count) Frame TV(s)")
         }
     }
 
-    /// Cancel an in-progress search
+    /// Stop an in-progress search
     func stopSearch() {
         searchTask?.cancel()
         searchTask = nil
-        connection?.cancel()
-        connection = nil
         isSearching = false
     }
 
-    // MARK: - SSDP Broadcast
-    private func sendSSDPBroadcast() {
-        let endpoint = NWEndpoint.hostPort(
-            host: NWEndpoint.Host(multicastAddress),
-            port: NWEndpoint.Port(rawValue: ssdpPort)!
-        )
+    // MARK: - Subnet Scan
+    private func scanSubnet() async {
+        // Get the device's local IP to determine the subnet
+        guard let localIP = getLocalIPAddress() else {
+            print("🔍 TVDiscovery: Could not determine local IP")
+            return
+        }
 
-        connection = NWConnection(to: endpoint, using: .udp)
-        connection?.start(queue: .global(qos: .userInitiated))
+        // Extract subnet prefix e.g. "192.168.86" from "192.168.86.10"
+        let parts = localIP.components(separatedBy: ".")
+        guard parts.count == 4 else { return }
+        let subnet = "\(parts[0]).\(parts[1]).\(parts[2])"
 
-        guard let data = searchMessage.data(using: .utf8) else { return }
+        print("🔍 TVDiscovery: Scanning subnet \(subnet).1-254")
 
-        connection?.send(content: data, completion: .contentProcessed { [weak self] error in
-            if let error = error {
-                print("🔍 TVDiscovery: Send error — \(error)")
-            } else {
-                print("🔍 TVDiscovery: SSDP broadcast sent")
-                guard let self else { return }
-                Task { @MainActor in
-                    self.listenForResponses()
-                }
-            }
-        })
-    }
+        let total = 254.0
+        var completed = 0
 
-    // MARK: - Listen for Responses
-    private func listenForResponses() {
-        connection?.receiveMessage { [weak self] data, _, _, error in
-            guard let self else { return }
-
-            if let data, let response = String(data: data, encoding: .utf8) {
-                Task { @MainActor in
-                    self.handleResponse(response)
+        // Scan all 254 addresses concurrently
+        await withTaskGroup(of: DiscoveredTV?.self) { group in
+            for i in 1...254 {
+                let ip = "\(subnet).\(i)"
+                group.addTask {
+                    await self.checkIP(ip)
                 }
             }
 
-            // Keep listening until search ends
-            if error == nil {
-                Task { @MainActor in
-                    if self.isSearching {
-                        self.listenForResponses()
+            for await result in group {
+                completed += 1
+                let progress = Double(completed) / total
+                await MainActor.run {
+                    self.scanProgress = progress
+                    if let tv = result {
+                        self.discoveredTVs.append(tv)
+                        print("📺 Found Frame TV: \(tv.name) (\(tv.modelName)) at \(tv.ipAddress)")
                     }
                 }
             }
         }
     }
 
-    // MARK: - Parse Response
-    private func handleResponse(_ response: String) {
-        // Pull the LOCATION header — it's a URL to the TV's description XML
-        guard let locationLine = response
-            .components(separatedBy: "\r\n")
-            .first(where: { $0.uppercased().hasPrefix("LOCATION:") }),
-              let url = URL(string: locationLine
-                  .replacingOccurrences(of: "LOCATION:", with: "", options: .caseInsensitive)
-                  .trimmingCharacters(in: .whitespaces)),
-              let ip = url.host
-        else { return }
+    // MARK: - Check Single IP
+    /// Queries port 8001 on a single IP to see if it's a Samsung Frame TV.
+    /// Returns a DiscoveredTV if it is, nil otherwise.
+    private func checkIP(_ ip: String) async -> DiscoveredTV? {
+        guard let url = URL(string: "http://\(ip):8001/api/v2/") else { return nil }
 
-        // Skip if we already found this TV
-        guard !discoveredTVs.contains(where: { $0.ipAddress == ip }) else { return }
+        // Short timeout — we're scanning 254 addresses
+        let config = URLSessionConfiguration.ephemeral
+        config.timeoutIntervalForRequest = 1.5
+        config.timeoutIntervalForResource = 1.5
+        let session = URLSession(configuration: config)
 
-        // Fetch the TV's UPnP description to get its name
-        Task {
-            await fetchDescription(from: url, ip: ip)
+        do {
+            let (data, response) = try await session.data(from: url)
+
+            guard let httpResponse = response as? HTTPURLResponse,
+                  httpResponse.statusCode == 200 else { return nil }
+
+            guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let device = json["device"] as? [String: Any] else { return nil }
+
+            // Only match Samsung Frame TVs
+            guard let frameSupport = device["FrameTVSupport"] as? String,
+                  frameSupport == "true" else { return nil }
+
+            let name = (json["name"] as? String) ?? (device["name"] as? String) ?? "Samsung Frame"
+            let model = (device["modelName"] as? String) ?? "Unknown"
+
+            return DiscoveredTV(name: name, ipAddress: ip, modelName: model)
+
+        } catch {
+            // Most IPs will fail — this is expected
+            return nil
         }
     }
 
-    // MARK: - Fetch TV Description
-    /// Downloads the TV's UPnP XML description to extract its friendly name
-    private func fetchDescription(from url: URL, ip: String) async {
-        guard let (data, _) = try? await URLSession.shared.data(from: url),
-              let xml = String(data: data, encoding: .utf8)
-        else {
-            addTV(name: "Samsung TV", ip: ip, model: "Unknown")
-            return
+    // MARK: - Get Local IP
+    /// Returns the device's local network IP address.
+    private func getLocalIPAddress() -> String? {
+        var address: String?
+        var ifaddr: UnsafeMutablePointer<ifaddrs>?
+
+        guard getifaddrs(&ifaddr) == 0 else { return nil }
+        defer { freeifaddrs(ifaddr) }
+
+        var ptr = ifaddr
+        while ptr != nil {
+            defer { ptr = ptr?.pointee.ifa_next }
+
+            guard let interface = ptr?.pointee,
+                  interface.ifa_addr.pointee.sa_family == UInt8(AF_INET) else { continue }
+
+            let name = String(cString: interface.ifa_name)
+            // Only look at WiFi (en0) or Ethernet (en1) interfaces
+            guard name == "en0" || name == "en1" else { continue }
+
+            var hostname = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+            getnameinfo(
+                interface.ifa_addr,
+                socklen_t(interface.ifa_addr.pointee.sa_len),
+                &hostname,
+                socklen_t(hostname.count),
+                nil,
+                0,
+                NI_NUMERICHOST
+            )
+            address = String(cString: hostname)
         }
-
-        let name  = xmlValue(xml, tag: "friendlyName") ?? "Samsung TV"
-        let model = xmlValue(xml, tag: "modelName")    ?? "Unknown"
-        addTV(name: name, ip: ip, model: model)
-    }
-
-    private func addTV(name: String, ip: String, model: String) {
-        let tv = DiscoveredTV(name: name, ipAddress: ip, modelName: model)
-        discoveredTVs.append(tv)
-        print("📺 Found: \(name) (\(model)) at \(ip)")
-    }
-
-    /// Simple XML tag value extractor — avoids pulling in XMLParser for two tags
-    private func xmlValue(_ xml: String, tag: String) -> String? {
-        guard let start = xml.range(of: "<\(tag)>"),
-              let end   = xml.range(of: "</\(tag)>")
-        else { return nil }
-        return String(xml[start.upperBound..<end.lowerBound])
+        return address
     }
 }

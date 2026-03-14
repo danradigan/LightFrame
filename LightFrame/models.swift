@@ -122,7 +122,7 @@ struct Matte: Codable, Equatable, Hashable {
     }
 
     // Parses a matte string from EXIF data, e.g. "flexible_warm" or "none"
-    static func parse(_ raw: String) -> Matte? {
+    nonisolated static func parse(_ raw: String) -> Matte? {
         let parts = raw.lowercased().components(separatedBy: "_")
         guard let style = MatteStyle(rawValue: parts[0]) else { return nil }
         let color = parts.count > 1 ? MatteColor(rawValue: parts[1]) : nil
@@ -134,26 +134,16 @@ struct Matte: Codable, Equatable, Hashable {
 // Represents a single photo file on disk in a collection folder.
 // This is the core model the entire app revolves around.
 struct Photo: Identifiable, Codable, Equatable, Hashable {
-    let id: UUID                    // Unique ID generated when the photo is first scanned
-    let url: URL                    // Full path to the file on disk
-    var matte: Matte?               // Parsed from EXIF — nil if no matte tag found
-    var tvContentID: String?        // The ID assigned by the TV after upload (e.g. "MY-C0042")
-    var isOnTV: Bool                // Whether this photo has been uploaded to the current TV
+    let id: UUID
+    let url: URL
+    var matte: Matte?
+    var tvContentID: String?
+    var isOnTV: Bool
+    var thumbnailData: Data?      // Pre-loaded during scan while security scope is open
 
-    // Just the filename, e.g. "sunset.jpg"
-    var filename: String {
-        url.lastPathComponent
-    }
-
-    // The file extension, lowercased, e.g. "jpg" or "png"
-    var fileExtension: String {
-        url.pathExtension.lowercased()
-    }
-
-    // Whether this is a JPEG — important for EXIF write-back
-    var isJPEG: Bool {
-        fileExtension == "jpg" || fileExtension == "jpeg"
-    }
+    var filename: String { url.lastPathComponent }
+    var fileExtension: String { url.pathExtension.lowercased() }
+    var isJPEG: Bool { fileExtension == "jpg" || fileExtension == "jpeg" }
 }
 
 // MARK: - TV-Only Item
@@ -177,6 +167,7 @@ struct Collection: Identifiable, Codable, Equatable {
     let id: UUID
     var name: String        // e.g. "Landscapes", "Holiday 2024"
     var folderURL: URL      // The folder on disk containing the photos
+    var bookmarkData: Data? // Security-scoped bookmark for sandbox access across launches
     var photos: [Photo]     // Photos found in this folder (populated when scanned)
 
     // Total number of photos currently on the TV from this collection

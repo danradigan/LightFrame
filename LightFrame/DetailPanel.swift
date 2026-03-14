@@ -1,16 +1,6 @@
-//
-//  DetailPanel.swift
-//  LightFrame
-//
-//  Created by Dan Radigan on 3/14/26.
-//
-
-
 import SwiftUI
 
 // MARK: - DetailPanel
-// The right column — shows the selected photo with its matte,
-// plus controls to change the matte style and color.
 struct DetailPanel: View {
     @EnvironmentObject var appState: AppState
 
@@ -28,18 +18,15 @@ struct DetailPanel: View {
 }
 
 // MARK: - Photo Detail View
-// Shows the selected photo with its matte and editing controls
 struct PhotoDetailView: View {
     @EnvironmentObject var appState: AppState
     let photo: Photo
 
-    // Local edits — these don't save until the user hits Save
     @State private var editedStyle: MatteStyle = .flexible
     @State private var editedColor: MatteColor = .warm
     @State private var isSaving: Bool = false
     @State private var saveMessage: String?
 
-    // Whether the user has made unsaved changes
     var hasChanges: Bool {
         editedStyle != (photo.matte?.style ?? .flexible) ||
         editedColor != (photo.matte?.color ?? .warm)
@@ -47,15 +34,19 @@ struct PhotoDetailView: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 20) {
+            VStack(alignment: .leading, spacing: 16) {
 
                 // MARK: Large Matte Preview
-                // Shows how the photo will look on the TV with current matte settings
-                MattePreviewView(
-                    photo: photoWithEdits,
-                    size: 240
-                )
-                .frame(maxWidth: .infinity)
+                // GeometryReader fills the full available panel width dynamically
+                GeometryReader { geometry in
+                    MattePreviewView(
+                        photo: photoWithEdits,
+                        size: geometry.size.width - 32
+                    )
+                    .frame(maxWidth: .infinity)
+                }
+                .aspectRatio(16/9, contentMode: .fit)
+                .padding(.horizontal, 16)
                 .padding(.top, 16)
 
                 // MARK: Photo Info
@@ -63,16 +54,12 @@ struct PhotoDetailView: View {
                     Text(photo.filename)
                         .font(.headline)
                         .lineLimit(2)
-
-                    HStack {
-                        // TV status badge
-                        Label(
-                            photo.isOnTV ? "On TV" : "Not on TV",
-                            systemImage: photo.isOnTV ? "tv.fill" : "tv"
-                        )
-                        .font(.caption)
-                        .foregroundColor(photo.isOnTV ? .green : .secondary)
-                    }
+                    Label(
+                        photo.isOnTV ? "On TV" : "Not on TV",
+                        systemImage: photo.isOnTV ? "tv.fill" : "tv"
+                    )
+                    .font(.caption)
+                    .foregroundColor(photo.isOnTV ? .green : .secondary)
                 }
                 .padding(.horizontal, 16)
 
@@ -85,13 +72,12 @@ struct PhotoDetailView: View {
                         .foregroundColor(.secondary)
                         .padding(.horizontal, 16)
 
-                    // Grid of style buttons — 2 columns
-                    LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
+                    LazyVGrid(
+                        columns: [GridItem(.flexible()), GridItem(.flexible())],
+                        spacing: 8
+                    ) {
                         ForEach(MatteStyle.allCases, id: \.self) { style in
-                            StyleButton(
-                                style: style,
-                                isSelected: editedStyle == style
-                            ) {
+                            StyleButton(style: style, isSelected: editedStyle == style) {
                                 editedStyle = style
                             }
                         }
@@ -100,7 +86,6 @@ struct PhotoDetailView: View {
                 }
 
                 // MARK: Matte Color Picker
-                // Only show if style is not "none"
                 if editedStyle != .none {
                     VStack(alignment: .leading, spacing: 8) {
                         Text("Color")
@@ -108,16 +93,12 @@ struct PhotoDetailView: View {
                             .foregroundColor(.secondary)
                             .padding(.horizontal, 16)
 
-                        // Grid of color swatches — 4 columns
                         LazyVGrid(
                             columns: Array(repeating: GridItem(.flexible()), count: 4),
                             spacing: 8
                         ) {
                             ForEach(MatteColor.allCases, id: \.self) { color in
-                                ColorSwatchButton(
-                                    color: color,
-                                    isSelected: editedColor == color
-                                ) {
+                                ColorSwatchButton(color: color, isSelected: editedColor == color) {
                                     editedColor = color
                                 }
                             }
@@ -130,14 +111,9 @@ struct PhotoDetailView: View {
 
                 // MARK: Action Buttons
                 VStack(spacing: 8) {
-                    // Save — writes matte back to the JPEG EXIF
-                    Button {
-                        saveMatte()
-                    } label: {
+                    Button { saveMatte() } label: {
                         HStack {
-                            if isSaving {
-                                ProgressView().scaleEffect(0.7)
-                            }
+                            if isSaving { ProgressView().scaleEffect(0.7) }
                             Text(isSaving ? "Saving..." : "Save Matte")
                         }
                         .frame(maxWidth: .infinity)
@@ -145,36 +121,26 @@ struct PhotoDetailView: View {
                     .buttonStyle(.borderedProminent)
                     .disabled(!hasChanges || isSaving || !photo.isJPEG)
 
-                    // Send to TV
-                    Button {
-                        // Upload action — wired up in next group
-                    } label: {
-                        Text("Send to TV")
-                            .frame(maxWidth: .infinity)
+                    Button { } label: {
+                        Text("Send to TV").frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.bordered)
                     .disabled(!(appState.selectedTV?.isReachable ?? false))
 
-                    // Remove from TV
                     if photo.isOnTV {
-                        Button(role: .destructive) {
-                            // Delete action — wired up in next group
-                        } label: {
-                            Text("Remove from TV")
-                                .frame(maxWidth: .infinity)
+                        Button(role: .destructive) { } label: {
+                            Text("Remove from TV").frame(maxWidth: .infinity)
                         }
                         .buttonStyle(.bordered)
                         .disabled(!(appState.selectedTV?.isReachable ?? false))
                     }
 
-                    // Save feedback message
                     if let message = saveMessage {
                         Text(message)
                             .font(.caption)
-                            .foregroundColor(.secondary)
+                            .foregroundColor(message.contains("✓") ? .green : .red)
                     }
 
-                    // Note if file isn't a JPEG
                     if !photo.isJPEG {
                         Text("Matte can only be saved to JPEG files")
                             .font(.caption)
@@ -185,13 +151,10 @@ struct PhotoDetailView: View {
                 .padding(.bottom, 20)
             }
         }
-        // When a new photo is selected, load its current matte into the editor
         .onAppear { loadCurrentMatte() }
-        .onChange(of: photo.id) { _ in loadCurrentMatte() }
+        .onChange(of: photo.id) { loadCurrentMatte() }
     }
 
-    // A copy of the photo with the current edited matte applied
-    // Used to drive the live preview in the detail panel
     var photoWithEdits: Photo {
         var copy = photo
         copy.matte = Matte(style: editedStyle, color: editedStyle == .none ? nil : editedColor)
@@ -208,16 +171,69 @@ struct PhotoDetailView: View {
         guard photo.isJPEG else { return }
         isSaving = true
         let newMatte = Matte(style: editedStyle, color: editedStyle == .none ? nil : editedColor)
+        let photoURL = photo.url
+        let currentPhoto = photo
 
         Task {
-            let success = await Task.detached(priority: .userInitiated) {
-                EXIFManager.writeMatte(newMatte, to: photo.url)
-            }.value
+            // Returns (success, updatedFileData)
+            let result: (Bool, Data?) = await withCheckedContinuation { continuation in
+                DispatchQueue.global(qos: .userInitiated).async {
 
+                    // Open security scope on the FOLDER bookmark.
+                    // Individual file URLs don't carry security scope —
+                    // we must open the parent folder's bookmark instead.
+                    var folderURL: URL? = nil
+                    var accessGranted = false
+
+                    DispatchQueue.main.sync {
+                        guard let collection = appState.collections.first(where: { col in
+                            col.photos.contains(where: { $0.id == currentPhoto.id })
+                        }) else { return }
+
+                        var resolved = collection.folderURL
+                        if let bookmarkData = collection.bookmarkData {
+                            var isStale = false
+                            if let url = try? URL(
+                                resolvingBookmarkData: bookmarkData,
+                                options: .withSecurityScope,
+                                relativeTo: nil,
+                                bookmarkDataIsStale: &isStale
+                            ) { resolved = url }
+                        }
+
+                        accessGranted = resolved.startAccessingSecurityScopedResource()
+                        folderURL = resolved
+                    }
+
+                    defer {
+                        if accessGranted, let url = folderURL {
+                            url.stopAccessingSecurityScopedResource()
+                        }
+                    }
+
+                    // Write the matte EXIF tag to the file
+                    guard EXIFManager.writeMatte(newMatte, to: photoURL) else {
+                        continuation.resume(returning: (false, nil))
+                        return
+                    }
+
+                    // Read back the updated file data so we can refresh
+                    // the in-memory thumbnail without a full rescan
+                    let updatedData = try? Data(contentsOf: photoURL)
+                    continuation.resume(returning: (true, updatedData))
+                }
+            }
+
+            let (writeSuccess, updatedData) = result
             isSaving = false
-            saveMessage = success ? "✓ Saved" : "Failed to save"
+            saveMessage = writeSuccess ? "✓ Saved" : "Failed to save"
 
-            // Clear the message after 2 seconds
+            if writeSuccess {
+                // Surgically update just this one photo in memory —
+                // no need to rescan the entire collection
+                appState.updateMatte(newMatte, for: currentPhoto, newData: updatedData)
+            }
+
             try? await Task.sleep(nanoseconds: 2_000_000_000)
             saveMessage = nil
         }
@@ -254,17 +270,17 @@ struct ColorSwatchButton: View {
 
     var body: some View {
         VStack(spacing: 3) {
-            // Color circle
             Circle()
                 .fill(color.previewColor)
                 .frame(width: 28, height: 28)
                 .overlay(
                     Circle()
-                        .stroke(isSelected ? Color.accentColor : Color.primary.opacity(0.2),
-                                lineWidth: isSelected ? 2 : 0.5)
+                        .stroke(
+                            isSelected ? Color.accentColor : Color.primary.opacity(0.2),
+                            lineWidth: isSelected ? 2 : 0.5
+                        )
                 )
                 .shadow(color: .black.opacity(0.1), radius: 1, x: 0, y: 1)
-
             Text(color.displayName)
                 .font(.system(size: 8))
                 .foregroundColor(.secondary)
@@ -275,7 +291,6 @@ struct ColorSwatchButton: View {
 }
 
 // MARK: - Empty Detail View
-// Shown when no photo is selected
 struct EmptyDetailView: View {
     var body: some View {
         VStack(spacing: 12) {
@@ -289,7 +304,6 @@ struct EmptyDetailView: View {
 }
 
 // MARK: - Preferences View
-// Opens via Cmd+, — settings that don't belong in the main UI
 struct PreferencesView: View {
     @EnvironmentObject var appState: AppState
     @AppStorage("defaultMatteStyle") private var defaultStyle: String = MatteStyle.flexible.rawValue
@@ -335,10 +349,8 @@ struct PreferencesView: View {
                                 .foregroundColor(.secondary)
                         }
                         Spacer()
-                        Button("Remove") {
-                            appState.removeTV(tv)
-                        }
-                        .foregroundColor(.red)
+                        Button("Remove") { appState.removeTV(tv) }
+                            .foregroundColor(.red)
                     }
                 }
             }

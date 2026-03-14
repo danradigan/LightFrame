@@ -108,12 +108,6 @@ struct SidebarView: View {
                     }
                 }
             }
-
-            // MARK: Slideshow Controls
-            // These are greyed out when no TV is connected
-            Section("Slideshow") {
-                SlideshowControlsView()
-            }
         }
         .listStyle(.sidebar)
         .sheet(isPresented: $showingAddCollection) {
@@ -125,33 +119,6 @@ struct SidebarView: View {
     }
 }
 
-// MARK: - TV Row
-// Shows a single TV with its name and connection status dot
-struct TVRowView: View {
-    @EnvironmentObject var appState: AppState
-    let tv: TV
-
-    var isSelected: Bool { appState.selectedTV?.id == tv.id }
-
-    var body: some View {
-        HStack {
-            // Green dot = reachable, grey dot = offline
-            Circle()
-                .fill(tv.isReachable ? Color.green : Color.gray)
-                .frame(width: 8, height: 8)
-
-            Text(tv.name)
-                .fontWeight(isSelected ? .semibold : .regular)
-
-            Spacer()
-        }
-        .contentShape(Rectangle())
-        .onTapGesture {
-            appState.selectedTV = tv
-        }
-    }
-}
-
 // MARK: - Collection Row
 // Shows a single named folder collection
 struct CollectionRowView: View {
@@ -159,6 +126,9 @@ struct CollectionRowView: View {
     let collection: Collection
 
     var isSelected: Bool { appState.selectedCollection?.id == collection.id }
+
+    @State private var isRenaming = false
+    @State private var renameName = ""
 
     var body: some View {
         HStack {
@@ -175,6 +145,35 @@ struct CollectionRowView: View {
         .contentShape(Rectangle())
         .onTapGesture {
             appState.selectedCollection = collection
+            Task {
+                await appState.scanSelectedCollection()
+            }
+        }
+        .contextMenu {
+            Button("Rename…") {
+                renameName = collection.name
+                isRenaming = true
+            }
+            Button {
+                appState.selectedCollection = collection
+                Task { await appState.scanSelectedCollection() }
+            } label: {
+                Label("Rescan Folder", systemImage: "arrow.clockwise")
+            }
+            Divider()
+            Button("Remove", role: .destructive) {
+                appState.removeCollection(collection)
+            }
+        }
+        .alert("Rename Collection", isPresented: $isRenaming) {
+            TextField("Name", text: $renameName)
+            Button("Cancel", role: .cancel) { }
+            Button("Rename") {
+                let trimmed = renameName.trimmingCharacters(in: .whitespaces)
+                if !trimmed.isEmpty {
+                    appState.renameCollection(collection, to: trimmed)
+                }
+            }
         }
     }
 }
@@ -202,40 +201,6 @@ struct FilterToggleRow: View {
     }
 }
 
-// MARK: - Slideshow Controls
-struct SlideshowControlsView: View {
-    @EnvironmentObject var appState: AppState
-
-    // Whether any TV is currently connected
-    var isConnected: Bool {
-        appState.selectedTV?.isReachable ?? false
-    }
-
-    @State private var selectedOrder: SlideshowOrder = .random
-    @State private var selectedInterval: SlideshowInterval = .fifteenMinutes
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            // Order picker
-            Picker("Order", selection: $selectedOrder) {
-                ForEach(SlideshowOrder.allCases, id: \.self) { order in
-                    Text(order.displayName).tag(order)
-                }
-            }
-            .pickerStyle(.segmented)
-            .disabled(!isConnected)
-
-            // Interval picker
-            Picker("Interval", selection: $selectedInterval) {
-                ForEach(SlideshowInterval.allCases, id: \.self) { interval in
-                    Text(interval.displayName).tag(interval)
-                }
-            }
-            .disabled(!isConnected)
-        }
-        .opacity(isConnected ? 1.0 : 0.4)
-    }
-}
 
 // MARK: - Add Collection Sheet
 // Modal that lets the user name and choose a folder
@@ -304,58 +269,15 @@ struct AddCollectionSheet: View {
         panel.allowsMultipleSelection = false
         panel.prompt = "Select Folder"
 
-        if panel.runModal() == .OK {
-            folderURL = panel.url
+        if panel.runModal() == .OK, let url = panel.url {
+            // Start security-scoped access immediately so we can hand
+            // a live URL to addCollection (which creates its own bookmark)
+            _ = url.startAccessingSecurityScopedResource()
+            folderURL = url
             // Auto-fill name from folder name if empty
-            if name.isEmpty, let url = panel.url {
+            if name.isEmpty {
                 name = url.lastPathComponent
             }
         }
-    }
-}
-
-// MARK: - Add TV Sheet
-// Modal for adding a new TV manually or via discovery
-struct AddTVSheet: View {
-    @EnvironmentObject var appState: AppState
-    @Environment(\.dismiss) var dismiss
-
-    @State private var name: String = ""
-    @State private var ipAddress: String = ""
-
-    var canSave: Bool { !name.isEmpty && !ipAddress.isEmpty }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 20) {
-            Text("Add TV")
-                .font(.headline)
-
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Name").font(.caption).foregroundColor(.secondary)
-                TextField("e.g. Living Room", text: $name)
-                    .textFieldStyle(.roundedBorder)
-            }
-
-            VStack(alignment: .leading, spacing: 4) {
-                Text("IP Address").font(.caption).foregroundColor(.secondary)
-                TextField("e.g. 192.168.86.25", text: $ipAddress)
-                    .textFieldStyle(.roundedBorder)
-            }
-
-            Spacer()
-
-            HStack {
-                Button("Cancel") { dismiss() }
-                Spacer()
-                Button("Add") {
-                    appState.addTV(name: name, ipAddress: ipAddress)
-                    dismiss()
-                }
-                .disabled(!canSave)
-                .buttonStyle(.borderedProminent)
-            }
-        }
-        .padding(24)
-        .frame(width: 320, height: 240)
     }
 }

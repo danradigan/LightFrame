@@ -13,7 +13,7 @@ struct LightFrameApp: App {
     var body: some Scene {
         // Main window
         WindowGroup {
-            ContentView()
+            ContentView(appState: appState)
                 .environmentObject(appState)
                 // Set a sensible minimum window size
                 .frame(minWidth: 900, minHeight: 600)

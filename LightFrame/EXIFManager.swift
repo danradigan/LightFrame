@@ -7,7 +7,7 @@ import UniformTypeIdentifiers
 // We store the matte tag in the EXIF ImageDescription field as a string
 // like "flexible_warm" or "modern_black". This survives Lightroom exports
 // and works with any app that reads standard EXIF data.
-class EXIFManager {
+final class EXIFManager: Sendable {
 
     // MARK: - Read Matte from JPEG
     /// Reads the matte configuration from a photo's EXIF ImageDescription field.
@@ -90,4 +90,15 @@ class EXIFManager {
         }
         return result
     }
+    // MARK: - Read Matte from Data
+    /// Reads matte from pre-loaded image data — avoids file access permission issues
+    nonisolated static func readMatteFromData(_ data: Data) -> Matte? {
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil),
+              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [String: Any],
+              let tiff = properties[kCGImagePropertyTIFFDictionary as String] as? [String: Any],
+              let description = tiff[kCGImagePropertyTIFFImageDescription as String] as? String
+        else { return nil }
+        return Matte.parse(description)
+    }
 }
+
