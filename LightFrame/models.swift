@@ -139,11 +139,21 @@ struct Photo: Identifiable, Codable, Equatable, Hashable {
     var matte: Matte?
     var tvContentID: String?
     var isOnTV: Bool
-    var thumbnailData: Data?      // Pre-loaded during scan while security scope is open
+    var thumbnailData: Data?      // Compressed JPEG thumbnail generated during scan
+    var width: Int?               // Pixel width of the original image
+    var height: Int?              // Pixel height of the original image
 
     var filename: String { url.lastPathComponent }
     var fileExtension: String { url.pathExtension.lowercased() }
     var isJPEG: Bool { fileExtension == "jpg" || fileExtension == "jpeg" }
+
+    // True if the image is approximately 16:9 (within 5% tolerance)
+    var is16x9: Bool {
+        guard let w = width, let h = height, h > 0 else { return true } // assume OK if unknown
+        let ratio = Double(w) / Double(h)
+        let target = 16.0 / 9.0  // 1.778
+        return abs(ratio - target) / target < 0.05
+    }
 }
 
 // MARK: - TV-Only Item
@@ -153,6 +163,17 @@ struct TVOnlyItem: Identifiable, Codable {
     let id: String          // The TV's content ID, e.g. "SAM-F0042" or "MY-C0012"
     var matte: Matte?       // The matte currently set on the TV for this item
     var isBuiltIn: Bool     // true = Samsung built-in art, false = user uploaded
+    var thumbnailData: Data? // Downloaded from TV during Scan TV
+    var width: Int?
+    var height: Int?
+
+    // True if approximately 16:9 (within 5% tolerance)
+    var is16x9: Bool {
+        guard let w = width, let h = height, h > 0 else { return true }
+        let ratio = Double(w) / Double(h)
+        let target = 16.0 / 9.0
+        return abs(ratio - target) / target < 0.05
+    }
 
     // Built-in Samsung art IDs start with "SAM-", user uploads start with "MY-"
     static func isBuiltInID(_ id: String) -> Bool {

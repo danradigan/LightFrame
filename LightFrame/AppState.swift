@@ -38,6 +38,8 @@ class AppState: ObservableObject {
 
     // MARK: - TV-Only Items
     @Published var tvOnlyItems: [TVOnlyItem] = []
+    @Published var selectedTVOnlyItemIDs: Set<String> = []
+    @Published var lastTappedTVOnlyItem: TVOnlyItem? = nil
 
     // MARK: - Grid Filter
     @Published var gridFilter: GridFilter = .all
@@ -247,9 +249,13 @@ class AppState: ObservableObject {
     func selectPhoto(_ photo: Photo) {
         selectedPhotoIDs = [photo.id]
         lastTappedPhoto = photo
+        selectedTVOnlyItemIDs = []
+        lastTappedTVOnlyItem = nil
     }
 
     func togglePhotoSelection(_ photo: Photo) {
+        selectedTVOnlyItemIDs = []
+        lastTappedTVOnlyItem = nil
         if selectedPhotoIDs.contains(photo.id) {
             selectedPhotoIDs.remove(photo.id)
             if lastTappedPhoto?.id == photo.id { lastTappedPhoto = nil }
@@ -260,6 +266,8 @@ class AppState: ObservableObject {
     }
 
     func selectRange(to photo: Photo, in photos: [Photo]) {
+        selectedTVOnlyItemIDs = []
+        lastTappedTVOnlyItem = nil
         guard let endIndex = photos.firstIndex(where: { $0.id == photo.id }) else { return }
         let startIndex: Int
         if let anchor = lastTappedPhoto,
@@ -276,10 +284,57 @@ class AppState: ObservableObject {
     func clearSelection() {
         selectedPhotoIDs = []
         lastTappedPhoto = nil
+        selectedTVOnlyItemIDs = []
+        lastTappedTVOnlyItem = nil
+    }
+
+    // MARK: - TV-Only Selection
+
+    func selectTVOnlyItem(_ item: TVOnlyItem) {
+        selectedTVOnlyItemIDs = [item.id]
+        lastTappedTVOnlyItem = item
+        selectedPhotoIDs = []
+        lastTappedPhoto = nil
+    }
+
+    func toggleTVOnlyItemSelection(_ item: TVOnlyItem) {
+        selectedPhotoIDs = []
+        lastTappedPhoto = nil
+        if selectedTVOnlyItemIDs.contains(item.id) {
+            selectedTVOnlyItemIDs.remove(item.id)
+            if lastTappedTVOnlyItem?.id == item.id { lastTappedTVOnlyItem = nil }
+        } else {
+            selectedTVOnlyItemIDs.insert(item.id)
+            lastTappedTVOnlyItem = item
+        }
+    }
+
+    func selectTVOnlyRange(to item: TVOnlyItem) {
+        selectedPhotoIDs = []
+        lastTappedPhoto = nil
+        guard let endIndex = tvOnlyItems.firstIndex(where: { $0.id == item.id }) else { return }
+        let startIndex: Int
+        if let anchor = lastTappedTVOnlyItem,
+           let anchorIndex = tvOnlyItems.firstIndex(where: { $0.id == anchor.id }) {
+            startIndex = anchorIndex
+        } else {
+            startIndex = 0
+        }
+        let range = min(startIndex, endIndex)...max(startIndex, endIndex)
+        selectedTVOnlyItemIDs.formUnion(tvOnlyItems[range].map { $0.id })
+        lastTappedTVOnlyItem = item
+    }
+
+    var selectedTVOnlyItems: [TVOnlyItem] {
+        tvOnlyItems.filter { selectedTVOnlyItemIDs.contains($0.id) }
     }
 
     func selectAll(photos: [Photo]) {
         selectedPhotoIDs = Set(photos.map { $0.id })
+        // Also select all TV-only items if on the On TV tab
+        if gridFilter == .onTV {
+            selectedTVOnlyItemIDs = Set(tvOnlyItems.map { $0.id })
+        }
     }
 
     // MARK: - Filtered Photos
@@ -319,7 +374,7 @@ class AppState: ObservableObject {
     // MARK: - Persistence
 
     func save() {
-        let data = PersistencePayload(collections: collections, tvs: tvs)
+        let data = PersistencePayload(collections: collections, tvs: tvs, tvOnlyItems: tvOnlyItems)
         if let encoded = try? JSONEncoder().encode(data) {
             try? encoded.write(to: storageURL)
         }
@@ -354,6 +409,7 @@ class AppState: ObservableObject {
         }
 
         tvs = decoded.tvs
+        tvOnlyItems = decoded.tvOnlyItems ?? []
         selectedCollection = collections.first
 
         // Restore selectedTV — this is one of the three allowed places to set it.
@@ -380,4 +436,5 @@ enum GridFilter: String, CaseIterable {
 private struct PersistencePayload: Codable {
     var collections: [Collection]
     var tvs: [TV]
+    var tvOnlyItems: [TVOnlyItem]?  // Optional for backwards compatibility with existing files
 }

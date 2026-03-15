@@ -30,31 +30,38 @@ final class PhotoScanner: Sendable {
 
         print("📂 PhotoScanner: Found \(imageURLs.count) images in \(folderURL.lastPathComponent)")
 
-        // Pre-load raw file data while security scope is open
-        var fileDataMap: [URL: Data] = [:]
-        for url in imageURLs {
-            if let data = try? Data(contentsOf: url) {
-                fileDataMap[url] = data
-            }
-        }
-
-        print("📂 PhotoScanner: Pre-loaded \(fileDataMap.count) files")
-
         return await withTaskGroup(of: Photo?.self) { group in
             for url in imageURLs {
-                let data = fileDataMap[url]
                 let existing = existingByFilename[url.lastPathComponent]
                 let contentID = syncStore.contentID(for: url.lastPathComponent)
 
                 group.addTask {
-                    let matte = data.flatMap { EXIFManager.readMatteFromData($0) }
+                    // Read full data only temporarily for EXIF + thumbnail generation
+                    guard let fullData = try? Data(contentsOf: url) else { return nil }
+
+                    let matte = EXIFManager.readMatteFromData(fullData)
+
+                    // Generate a 600px thumbnail and compress as JPEG (~20-40KB)
+                    let thumbData = Self.generateThumbnailData(from: fullData, maxSize: 600)
+
+                    // Read pixel dimensions from image source
+                    var imgWidth: Int? = nil
+                    var imgHeight: Int? = nil
+                    if let source = CGImageSourceCreateWithData(fullData as CFData, nil),
+                       let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [String: Any] {
+                        imgWidth = props[kCGImagePropertyPixelWidth as String] as? Int
+                        imgHeight = props[kCGImagePropertyPixelHeight as String] as? Int
+                    }
+
                     return Photo(
                         id: existing?.id ?? UUID(),
                         url: url,
                         matte: matte,
                         tvContentID: contentID,
                         isOnTV: contentID != nil,
-                        thumbnailData: data
+                        thumbnailData: thumbData,
+                        width: imgWidth,
+                        height: imgHeight
                     )
                 }
             }
@@ -65,6 +72,24 @@ final class PhotoScanner: Sendable {
             }
             return photos.sorted { $0.filename < $1.filename }
         }
+    }
+
+    // MARK: - Generate Thumbnail Data
+    // Creates a compressed JPEG thumbnail at the given max pixel size.
+    // Returns ~20-40KB instead of the original 1-3MB.
+    nonisolated static func generateThumbnailData(from data: Data, maxSize: CGFloat) -> Data? {
+        let options: [CFString: Any] = [
+            kCGImageSourceThumbnailMaxPixelSize: Int(maxSize),
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true
+        ]
+
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil),
+              let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
+        else { return nil }
+
+        let bitmapRep = NSBitmapImageRep(cgImage: cgImage)
+        return bitmapRep.representation(using: .jpeg, properties: [.compressionFactor: 0.8])
     }
 
     // MARK: - Generate Thumbnail

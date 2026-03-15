@@ -122,21 +122,11 @@ class TVConnection: ObservableObject {
 
     // MARK: - Private
     private var pairingTask: URLSessionWebSocketTask?   // samsung.remote.control
-    private var artTask: URLSessionWebSocketTask?       // com.samsung.art-app
     private var urlSession: URLSession?
     private let sslDelegate = SSLBypassDelegate()
     private var keepaliveTask: Task<Void, Never>?
-    private var listeningTask: Task<Void, Never>?
-    private var listening = false
     private var tv: TV
-
-    // Pending regular command — resolved when a d2d_service_message arrives
-    // matching our pending UUID (Python: wait_for_response(request_uuid=cmdUUID))
-    private var pendingContinuation: CheckedContinuation<[String: Any]?, Error>?
-    private var pendingRequestUUID: String? = nil
-
-    // Separate pending continuation for image_added (fires after socket transfer)
-    private var pendingUploadContinuation: CheckedContinuation<[String: Any]?, Error>?
+    private(set) var hasConnected = false  // True once we've successfully connected at least once
 
     // MARK: - Init
     init(tv: TV) {
@@ -214,24 +204,9 @@ class TVConnection: ObservableObject {
             testTask?.cancel()
 
             state = .connected
+            hasConnected = true
             print("✅ Connected to \(tv.name)")
             startKeepalive()
-
-            // Read and log current slideshow status to confirm art channel works
-            Task {
-                do {
-                    if let status = try await self.getSlideshowStatus(),
-                       let dataStr = status["data"] as? String,
-                       let dataBytes = dataStr.data(using: .utf8),
-                       let dataJSON = try? JSONSerialization.jsonObject(with: dataBytes) as? [String: Any] {
-                        let value = dataJSON["value"] as? String ?? "?"
-                        let type  = dataJSON["type"]  as? String ?? "?"
-                        print("📺 Slideshow: duration=\(value) type=\(type)")
-                    }
-                } catch {
-                    print("📺 Slideshow status error: \(error.localizedDescription)")
-                }
-            }
 
         } catch {
             print("❌ Connection failed: \(error.localizedDescription)")
@@ -259,21 +234,12 @@ class TVConnection: ObservableObject {
 
     // MARK: - Disconnect
     func disconnect() {
-        listening = false
         keepaliveTask?.cancel()
-        listeningTask?.cancel()
         keepaliveTask = nil
-        listeningTask = nil
-        pendingContinuation?.resume(returning: nil)
-        pendingContinuation = nil
-        pendingRequestUUID = nil
-        pendingUploadContinuation?.resume(returning: nil)
-        pendingUploadContinuation = nil
         pairingTask?.cancel(with: .goingAway, reason: nil)
         pairingTask = nil
-        artTask?.cancel(with: .goingAway, reason: nil)
-        artTask = nil
         urlSession = nil
+        hasConnected = false
         if state != .disconnected { state = .disconnected }
         print("🔌 Disconnected from \(tv.name)")
     }
@@ -288,7 +254,9 @@ class TVConnection: ObservableObject {
     // sending the command, reading the response, then letting the channel close.
     //
     func sendArtCommand(_ params: [String: Any]) async throws -> [String: Any]? {
-        guard state == .connected else { throw TVError.notConnected }
+        // Allow commands if we've ever successfully connected — art commands open
+        // their own channels and don't need the pairing channel to be alive.
+        guard hasConnected else { throw TVError.notConnected }
         guard let artURL = tv.artChannelURL else { throw TVError.notConnected }
 
         var innerParams = params
@@ -372,18 +340,289 @@ class TVConnection: ObservableObject {
     // MARK: - Art API
 
     // Python: available(category=None) → get_content_list
-    func getAvailableArt() async throws -> [[String: Any]] {
-        let response = try await sendArtCommand([
-            "request":  "get_content_list",
-            "category": NSNull()
-        ])
+    func getAvailableArt(category: String? = nil) async throws -> [[String: Any]] {
+        let params: [String: Any] = category != nil
+            ? ["request": "get_content_list", "category": category!]
+            : ["request": "get_content_list", "category": NSNull()]
+
+        let response = try await sendArtCommand(params)
         guard let response,
               let dataStr = response["data"] as? String,
               let data    = dataStr.data(using: .utf8),
-              let parsed  = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let list    = parsed["content_list"] as? [[String: Any]]
+              let parsed  = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
         else { return [] }
-        return list
+
+        // content_list can be a JSON string (double-encoded) or already an array
+        if let listStr = parsed["content_list"] as? String,
+           let listData = listStr.data(using: .utf8),
+           let list = try? JSONSerialization.jsonObject(with: listData) as? [[String: Any]] {
+            // Filter by category if specified
+            if let category = category {
+                return list.filter { ($0["category_id"] as? String) == category }
+            }
+            return list
+        }
+        if let list = parsed["content_list"] as? [[String: Any]] {
+            return list
+        }
+        return []
+    }
+
+    // Convenience: get only user-uploaded photos (MY-C0002)
+    func getMyPhotos() async throws -> [[String: Any]] {
+        return try await getAvailableArt(category: "MY-C0002")
+    }
+
+    // MARK: - Download Thumbnails (Batch)
+    //
+    // Line-by-line translation of get_thumbnail_list() from art.py lines 304-339.
+    // Uses the same art channel + conn_info + TCP pattern as uploadViaSocket (which works).
+    //
+    func getThumbnails(contentIDs: [String]) async throws -> [String: Data] {
+        guard hasConnected else { throw TVError.notConnected }
+        guard let artURL = tv.artChannelURL else { throw TVError.notConnected }
+        guard !contentIDs.isEmpty else { return [:] }
+
+        // Python line 307: content_id_list=[{"content_id": id} for id in content_id_list]
+        let contentIDList = contentIDs.map { ["content_id": $0] }
+
+        // Python lines 308-317: data = self._send_art_request({...})
+        let thumbUUID = UUID().uuidString
+        let connectionID = Int(UInt32.random(in: 0..<UInt32.max))
+
+        let innerParams: [String: Any] = [
+            "request":         "get_thumbnail_list",
+            "content_id_list": contentIDList,
+            "id":              thumbUUID,
+            "request_id":      thumbUUID,
+            "conn_info": [
+                "d2d_mode":      "socket",
+                "connection_id": connectionID,
+                "id":            thumbUUID
+            ]
+        ]
+
+        guard let dataString = toJSONString(innerParams) else { return [:] }
+
+        let envelope: [String: Any] = [
+            "method": "ms.channel.emit",
+            "params": [
+                "event": "art_app_request",
+                "to":    "host",
+                "data":  dataString
+            ]
+        ]
+
+        guard let envelopeString = toJSONString(envelope) else { return [:] }
+
+        print("🖼️ Requesting \(contentIDs.count) thumbnails [uuid: \(thumbUUID.prefix(8))]")
+
+        // ── Open art channel (same as uploadViaSocket) ───────────────────────
+        let session = URLSession(configuration: .default, delegate: sslDelegate, delegateQueue: nil)
+        let artTask = session.webSocketTask(with: artURL)
+        artTask.resume()
+
+        let ignoreEvents = ["ed.edenTV.update", "ms.voiceApp.hide"]
+        var handshakeComplete = false
+        for _ in 0..<10 {
+            let msg = try await withTimeout(seconds: 10) { try await artTask.receive() }
+            if case .string(let text) = msg, let json = self.parseJSON(text), let ev = json["event"] as? String {
+                if ignoreEvents.contains(ev) { continue }
+                if ev == "ms.channel.connect" { continue }
+                if ev == "ms.channel.ready" { handshakeComplete = true; break }
+            }
+        }
+        guard handshakeComplete else {
+            artTask.cancel()
+            throw TVError.commandFailed("Art channel did not become ready")
+        }
+
+        // ── Send command ─────────────────────────────────────────────────────
+        try await artTask.send(.string(envelopeString))
+
+        // ── Wait for response (same parsing as uploadViaSocket) ──────────────
+        // Python: data = self._send_art_request(...)  →  returns inner parsed dict
+        // Python line 320: conn_info = json.loads(data["conn_info"])
+        var dataJSON: [String: Any]? = nil
+
+        let _: [String: Any] = try await withTimeout(seconds: 30) {
+            while true {
+                let msg = try await artTask.receive()
+                guard case .string(let text) = msg else { continue }
+
+                guard let json     = self.parseJSON(text),
+                      let event    = json["event"] as? String,
+                      event        == "d2d_service_message",
+                      let dataStr  = json["data"] as? String,
+                      let dataBytes = dataStr.data(using: .utf8),
+                      let innerJSON = try? JSONSerialization.jsonObject(with: dataBytes) as? [String: Any]
+                else { continue }
+
+                let requestID = innerJSON["request_id"] as? String ?? innerJSON["id"] as? String ?? ""
+                if requestID == thumbUUID {
+                    dataJSON = innerJSON
+                    return json
+                }
+            }
+        }
+
+        // Python line 320: conn_info = json.loads(data["conn_info"])
+        guard let dataJSON,
+              let connInfoStr   = dataJSON["conn_info"] as? String,
+              let connInfoBytes = connInfoStr.data(using: .utf8),
+              let connInfo      = try? JSONSerialization.jsonObject(with: connInfoBytes) as? [String: Any],
+              let tvIP          = connInfo["ip"]   as? String,
+              let tvPortRaw     = connInfo["port"]
+        else {
+            print("❌ get_thumbnail_list missing conn_info. dataJSON: \(String(describing: dataJSON))")
+            artTask.cancel()
+            throw TVError.commandFailed("No conn_info in thumbnail response")
+        }
+
+        let tvPort = tvPortRaw as? Int ?? Int(tvPortRaw as? String ?? "0") ?? 0
+
+        // Python line 321-322:
+        //   art_socket_raw = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        //   art_socket = get_ssl_context().wrap_socket(art_socket_raw) if conn_info.get('secured', False) else art_socket_raw
+        let secured: Bool
+        if let b = connInfo["secured"] as? Bool { secured = b }
+        else if let s = connInfo["secured"] as? String { secured = s.lowercased() == "true" }
+        else { secured = false }
+
+        print("🖼️ TCP connect to \(tvIP):\(tvPort) secured=\(secured)")
+
+        let endpoint = NWEndpoint.hostPort(
+            host: NWEndpoint.Host(tvIP),
+            port: NWEndpoint.Port(integerLiteral: UInt16(tvPort))
+        )
+
+        let nwParams: NWParameters
+        if secured {
+            let tlsOptions = NWProtocolTLS.Options()
+            sec_protocol_options_set_verify_block(
+                tlsOptions.securityProtocolOptions,
+                { _, _, completionHandler in completionHandler(true) },
+                .global(qos: .userInitiated)
+            )
+            nwParams = NWParameters(tls: tlsOptions)
+        } else {
+            nwParams = NWParameters.tcp
+        }
+
+        // Python line 323: art_socket.connect((conn_info["ip"], int(conn_info["port"])))
+        let tcpConnection = NWConnection(to: endpoint, using: nwParams)
+        try await connectTCP(tcpConnection)
+
+        // Python lines 324-338: read loop
+        //   total_num_thumbnails = 1
+        //   current_thumb = -1
+        //   while current_thumb+1 < total_num_thumbnails:
+        //       header_len = int.from_bytes(art_socket.recv(4), "big")
+        //       header = json.loads(art_socket.recv(header_len))
+        //       thumbnail_data_len = int(header["fileLength"])
+        //       current_thumb = int(header["num"])
+        //       total_num_thumbnails = int(header["total"])
+        //       filename = "{}.{}".format(header["fileID"], header["fileType"])
+        //       thumbnail_data = bytearray()
+        //       while len(thumbnail_data) < thumbnail_data_len:
+        //           packet = art_socket.recv(thumbnail_data_len - len(thumbnail_data))
+        //           thumbnail_data.extend(packet)
+        //       thumbnail_data_dict[filename] = thumbnail_data
+
+        var result: [String: Data] = [:]
+        var totalNumThumbnails = 1
+        var currentThumb = -1
+
+        while currentThumb + 1 < totalNumThumbnails {
+            // header_len = int.from_bytes(art_socket.recv(4), "big")
+            let headerLenBytes = try await tcpReceive(connection: tcpConnection, length: 4)
+            let headerLen = Int(headerLenBytes.withUnsafeBytes {
+                UInt32(bigEndian: $0.load(as: UInt32.self))
+            })
+
+            // header = json.loads(art_socket.recv(header_len))
+            let headerBytes = try await tcpReceive(connection: tcpConnection, length: headerLen)
+            guard let header = try? JSONSerialization.jsonObject(with: headerBytes) as? [String: Any] else {
+                print("❌ Failed to parse thumbnail header. Raw: \(String(data: headerBytes, encoding: .utf8) ?? "?")")
+                break
+            }
+
+            // thumbnail_data_len = int(header["fileLength"])
+            let thumbnailDataLen: Int
+            if let n = header["fileLength"] as? Int { thumbnailDataLen = n }
+            else if let s = header["fileLength"] as? String, let n = Int(s) { thumbnailDataLen = n }
+            else { print("❌ No fileLength in header: \(header)"); break }
+
+            // current_thumb = int(header["num"])
+            if let n = header["num"] as? Int { currentThumb = n }
+            else if let s = header["num"] as? String, let n = Int(s) { currentThumb = n }
+            else { print("❌ No num in header: \(header)"); break }
+
+            // total_num_thumbnails = int(header["total"])
+            if let n = header["total"] as? Int { totalNumThumbnails = n }
+            else if let s = header["total"] as? String, let n = Int(s) { totalNumThumbnails = n }
+            else { print("❌ No total in header: \(header)"); break }
+
+            // filename = "{}.{}".format(header["fileID"], header["fileType"])
+            let fileID = header["fileID"] as? String ?? "unknown"
+            let fileType = header["fileType"] as? String ?? "jpg"
+            let filename = "\(fileID).\(fileType)"
+
+            // Read thumbnail bytes with loop (matching Python lines 334-337)
+            let thumbnailData = try await tcpReceive(connection: tcpConnection, length: thumbnailDataLen)
+
+            result[fileID] = thumbnailData
+            print("🖼️ Thumbnail \(currentThumb + 1)/\(totalNumThumbnails): \(filename) (\(thumbnailData.count) bytes)")
+        }
+
+        // Python: writer.close() / implicit socket close
+        tcpConnection.cancel()
+        artTask.cancel()
+
+        print("🖼️ Downloaded \(result.count) thumbnails total")
+        return result
+    }
+
+    // Async TCP connect helper
+    private func connectTCP(_ connection: NWConnection) async throws {
+        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
+            nonisolated(unsafe) var fired = false
+            connection.stateUpdateHandler = { nwState in
+                guard !fired else { return }
+                switch nwState {
+                case .ready:
+                    fired = true; cont.resume()
+                case .failed(let e):
+                    fired = true; cont.resume(throwing: e)
+                case .cancelled:
+                    fired = true; cont.resume(throwing: TVError.timeout)
+                default: break
+                }
+            }
+            connection.start(queue: .global(qos: .userInitiated))
+        }
+    }
+
+    // Async TCP receive helper — reads exactly `length` bytes, looping for partial reads.
+    // NWConnection.receive can return fewer bytes than requested.
+    private func tcpReceive(connection: NWConnection, length: Int) async throws -> Data {
+        var buffer = Data()
+        while buffer.count < length {
+            let remaining = length - buffer.count
+            let chunk: Data = try await withCheckedThrowingContinuation { cont in
+                connection.receive(minimumIncompleteLength: 1, maximumLength: remaining) { data, _, _, error in
+                    if let error = error {
+                        cont.resume(throwing: error)
+                    } else if let data = data, !data.isEmpty {
+                        cont.resume(returning: data)
+                    } else {
+                        cont.resume(throwing: TVError.uploadFailed("TCP connection closed during read"))
+                    }
+                }
+            }
+            buffer.append(chunk)
+        }
+        return buffer
     }
 
     // Python: delete_list(content_ids) builds [{"content_id": id}, ...] not [id, ...]
@@ -437,6 +676,54 @@ class TVConnection: ObservableObject {
         return (value, type)
     }
 
+    // Python: change_matte(content_id, matte_id, portrait_matte)
+    // Updates the matte on a photo already on the TV without re-uploading.
+    func changeMatte(contentID: String, matte: Matte) async throws {
+        let matteToken = matte.apiToken
+        var params: [String: Any] = [
+            "request":    "change_matte",
+            "content_id": contentID,
+            "matte_id":   matteToken
+        ]
+        if matte.style != .none {
+            params["portrait_matte_id"] = matteToken
+        }
+        _ = try await sendArtCommand(params)
+        print("🎨 Matte changed to \(matteToken) for \(contentID)")
+    }
+
+    // Python: get_current_artwork()
+    func getCurrentArtwork() async throws -> String? {
+        let response = try await sendArtCommand(["request": "get_current_artwork"])
+        guard let response,
+              let dataStr = response["data"] as? String,
+              let dataBytes = dataStr.data(using: .utf8),
+              let dataJSON = try? JSONSerialization.jsonObject(with: dataBytes) as? [String: Any]
+        else { return nil }
+        return dataJSON["content_id"] as? String
+    }
+
+    // MARK: - Auto-Reconnect Wrapper
+    // Wraps sendArtCommand with one retry after reconnecting.
+    // Handles the case where the TV dropped the pairing channel during idle.
+    func sendArtCommandWithRetry(_ params: [String: Any]) async throws -> [String: Any]? {
+        do {
+            return try await sendArtCommand(params)
+        } catch TVError.notConnected {
+            print("🔄 Not connected — attempting reconnect...")
+            disconnect()
+            await connect()
+            guard state == .connected else { throw TVError.notConnected }
+            return try await sendArtCommand(params)
+        } catch TVError.timeout {
+            print("🔄 Timeout — attempting reconnect...")
+            disconnect()
+            await connect()
+            guard state == .connected else { throw TVError.timeout }
+            return try await sendArtCommand(params)
+        }
+    }
+
     // MARK: - Upload
     func uploadPhoto(imageData: Data, fileType: String, matte: Matte?) async throws -> String {
         return try await uploadViaSocket(imageData: imageData, fileType: fileType, matte: matte)
@@ -455,7 +742,7 @@ class TVConnection: ObservableObject {
     // then close it when done.
     //
     private func uploadViaSocket(imageData: Data, fileType: String, matte: Matte?) async throws -> String {
-        guard state == .connected else { throw TVError.notConnected }
+        guard hasConnected else { throw TVError.notConnected }
         guard let artURL = tv.artChannelURL else { throw TVError.notConnected }
 
         let matteToken = matte?.apiToken ?? "flexible_warm"
@@ -537,7 +824,7 @@ class TVConnection: ObservableObject {
         // Python: wait_for_response(request_uuid=uploadUUID)
         var readyDataJSON: [String: Any]? = nil
 
-        let readyResponse: [String: Any] = try await withTimeout(seconds: 30) {
+        let _: [String: Any] = try await withTimeout(seconds: 30) {
             while true {
                 let msg = try await uploadArtTask.receive()
                 guard case .string(let text) = msg else { continue }
@@ -629,7 +916,7 @@ class TVConnection: ObservableObject {
         let tcpConnection = NWConnection(to: endpoint, using: nwParams)
 
         try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
-            var fired = false
+            nonisolated(unsafe) var fired = false
             tcpConnection.stateUpdateHandler = { nwState in
                 guard !fired else { return }
                 switch nwState {
@@ -724,109 +1011,22 @@ class TVConnection: ObservableObject {
     }
 
     // MARK: - Keepalive
+    // Pings the pairing channel periodically.
+    // If the ping fails, we DON'T disconnect — the TV often drops the pairing channel
+    // when art channel connections are active (uploads, scans, etc). Since all art commands
+    // open their own channels, the connection is still functional without the pairing channel.
+    // We only stop pinging; the connection stays in .connected state.
     private func startKeepalive() {
         keepaliveTask?.cancel()
         keepaliveTask = Task { @MainActor [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 15_000_000_000)
                 guard let self, self.state == .connected else { break }
-                self.pairingTask?.sendPing { _ in }
-                self.artTask?.sendPing { [weak self] error in
+                self.pairingTask?.sendPing { error in
                     if let error = error {
-                        print("🏓 Art ping failed: \(error.localizedDescription)")
-                        Task { @MainActor [weak self] in
-                            if self?.state == .connected { self?.disconnect() }
-                        }
+                        print("🏓 Ping failed (non-fatal): \(error.localizedDescription)")
                     }
                 }
-            }
-        }
-    }
-
-    // MARK: - Listen
-    // Python: process_event() in async_art.py
-    private func startListening() {
-        listening = true
-        listeningTask?.cancel()
-        listeningTask = Task { @MainActor [weak self] in
-            guard let self else { return }
-            while !Task.isCancelled && self.listening {
-                guard let artTask = self.artTask else { break }
-                do {
-                    let msg = try await artTask.receive()
-                    if case .string(let text) = msg {
-                        print("📩 TV: \(text.prefix(2000))")
-                        self.handleArtMessage(text)
-                    }
-                } catch {
-                    if self.state == .connected {
-                        print("⚠️ Listen error: \(error.localizedDescription)")
-                        self.disconnect()
-                    }
-                    break
-                }
-            }
-        }
-    }
-
-    // MARK: - Handle Art Message
-    // Python: process_event() — routes d2d_service_message to pending continuations
-    @MainActor
-    private func handleArtMessage(_ text: String) {
-        guard let json  = parseJSON(text),
-              let event = json["event"] as? String
-        else { return }
-
-        // Python: only processes D2D_SERVICE_MESSAGE_EVENT = "d2d_service_message"
-        guard event == "d2d_service_message" else {
-            print("⏭️ Skipping: \(event)")
-            return
-        }
-
-        guard let dataStr   = json["data"] as? String,
-              let dataBytes  = dataStr.data(using: .utf8),
-              let dataJSON   = try? JSONSerialization.jsonObject(with: dataBytes) as? [String: Any]
-        else {
-            print("⏭️ d2d_service_message: unparseable inner data")
-            return
-        }
-
-        // Python: sub_event = data.get("event", "*")
-        //         request_id = data.get('request_id', data.get('id'))
-        let subEvent  = dataJSON["event"]      as? String ?? "*"
-        let requestID = dataJSON["request_id"] as? String ?? dataJSON["id"] as? String ?? ""
-
-        print("📨 sub_event=\(subEvent) request_id=\(requestID.prefix(8))")
-
-        // Python: if sub_event == "error": raise ResponseError
-        if subEvent == "error" {
-            let errorCode = dataJSON["error_code"] as? String ?? "unknown"
-            print("❌ TV error code=\(errorCode)")
-            pendingContinuation?.resume(throwing: TVError.commandFailed("TV error \(errorCode)"))
-            pendingContinuation = nil
-            pendingRequestUUID  = nil
-            return
-        }
-
-        // Python: wait_for_response("image_added") matches by event name
-        if subEvent == "image_added" {
-            print("✅ image_added → upload continuation")
-            pendingUploadContinuation?.resume(returning: json)
-            pendingUploadContinuation = nil
-            return
-        }
-
-        // All other responses: match by UUID
-        // Python: if data.get('request_id', data.get('id')) == request_uuid
-        if let cont = pendingContinuation {
-            let waiting = pendingRequestUUID ?? ""
-            if requestID == waiting || waiting.isEmpty {
-                print("✅ UUID match → command continuation (sub_event=\(subEvent))")
-                pendingContinuation = nil
-                pendingRequestUUID  = nil
-                cont.resume(returning: json)
-            } else {
-                print("⏭️ UUID mismatch: got \(requestID.prefix(8)) want \(waiting.prefix(8))")
             }
         }
     }

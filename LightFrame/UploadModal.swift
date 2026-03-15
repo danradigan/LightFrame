@@ -111,6 +111,13 @@ struct UploadModal: View {
             // MARK: Footer Buttons
             HStack {
                 if engine.isComplete {
+                    // Show "Retry Failed" if there were failures
+                    if engine.failedCount > 0 && !engine.isCancelled {
+                        Button("Retry Failed (\(engine.failedCount))") {
+                            Task { await engine.retryFailed() }
+                        }
+                        .buttonStyle(.bordered)
+                    }
                     Spacer()
                     Button("Done") { onDismiss() }
                         .buttonStyle(.borderedProminent)

@@ -186,6 +186,46 @@ class UploadEngine: ObservableObject, Identifiable {
         pendingDuplicate = nil
     }
 
+    // MARK: - Retry Failed
+    /// Re-queues all failed items and processes them again.
+    /// Called from the completion screen's "Retry Failed" button.
+    func retryFailed() async {
+        // Reset failed items back to pending
+        for index in items.indices {
+            if case .failed = items[index].state {
+                items[index].state = .pending
+            }
+        }
+
+        isComplete = false
+        isCancelled = false
+        isRunning = true
+        bulkDuplicateResolution = nil
+
+        startTimer()
+
+        // Process only the items that are pending (the retried ones)
+        for index in items.indices {
+            guard !isCancelled else { break }
+            guard case .pending = items[index].state else { continue }
+
+            currentIndex = index
+
+            await withTaskCancellationHandler {
+                let task = Task { await self.processItem(at: index) }
+                currentUploadTask = task
+                await task.value
+                currentUploadTask = nil
+            } onCancel: {}
+
+            if isCancelled { break }
+        }
+
+        stopTimer()
+        isRunning = false
+        isComplete = true
+    }
+
     // MARK: - Resolve Duplicate
     /// Called by the UI when the user responds to the duplicate prompt.
     /// applyToAll: if true, stores their choice for all future duplicates this session.
@@ -330,5 +370,6 @@ extension AppState {
         if selectedCollection?.id == collection.id {
             selectedCollection = collections[colIndex]
         }
+        save()
     }
 }

@@ -22,7 +22,9 @@ class TVConnectionManager: ObservableObject {
     private var connectedTVID: UUID? = nil
     private var appState: AppState
     private var cancellables = Set<AnyCancellable>()
-
+    private var reconnectTask: Task<Void, Never>? = nil
+    private var reconnectAttempts: Int = 0
+    private static let maxReconnectAttempts = 5
     // MARK: - Init
     init(appState: AppState) {
         self.appState = appState
@@ -52,6 +54,11 @@ class TVConnectionManager: ObservableObject {
         guard incomingID != connectedTVID else { return }
         connectedTVID = incomingID
 
+        // Cancel any pending reconnect for the old TV
+        reconnectTask?.cancel()
+        reconnectTask = nil
+        reconnectAttempts = 0
+
         connection?.disconnect()
         connection = nil
 
@@ -77,9 +84,15 @@ class TVConnectionManager: ObservableObject {
                 case .disconnected:
                     if self.connectedTVID == tv.id {
                         self.statusMessage = "\(tv.name) — Disconnected"
+                        // Auto-reconnect after a short delay
+                        self.scheduleReconnect(for: tv)
                     }
                 case .error(let msg):
                     self.statusMessage = "Error: \(msg)"
+                    // Also try to reconnect on errors
+                    if self.connectedTVID == tv.id {
+                        self.scheduleReconnect(for: tv)
+                    }
                 }
             }
             .store(in: &cancellables)
@@ -96,9 +109,49 @@ class TVConnectionManager: ObservableObject {
 
     // MARK: - Manual Reconnect
     func reconnect() async {
+        reconnectTask?.cancel()
+        reconnectTask = nil
+        reconnectAttempts = 0
         connectedTVID = nil
         if let tv = appState.selectedTV {
             await switchTo(tv: tv)
+        }
+    }
+
+    // MARK: - Auto-Reconnect
+    // Schedules a reconnect with exponential backoff (5s, 10s, 20s, 40s, 80s).
+    // Stops after maxReconnectAttempts to avoid infinite loops when the TV is truly off.
+    private func scheduleReconnect(for tv: TV) {
+        reconnectTask?.cancel()
+        guard reconnectAttempts < Self.maxReconnectAttempts else {
+            statusMessage = "\(tv.name) — Offline (gave up after \(Self.maxReconnectAttempts) attempts)"
+            print("🔄 Gave up reconnecting to \(tv.name)")
+            return
+        }
+
+        let delay = UInt64(5 * pow(2.0, Double(reconnectAttempts))) * 1_000_000_000
+        reconnectAttempts += 1
+        let attempt = reconnectAttempts
+
+        print("🔄 Reconnect attempt \(attempt) in \(delay / 1_000_000_000)s...")
+        statusMessage = "\(tv.name) — Reconnecting (\(attempt)/\(Self.maxReconnectAttempts))..."
+
+        reconnectTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: delay)
+            guard let self, !Task.isCancelled, self.connectedTVID == tv.id else { return }
+
+            // Only reconnect if still disconnected
+            guard self.connection?.state != .connected else { return }
+
+            self.connection?.disconnect()
+            self.connection = nil
+            self.connectedTVID = nil  // Allow switchTo to proceed
+            await self.switchTo(tv: tv)
+
+            // Reset attempts on successful connect
+            if self.connection?.state == .connected {
+                self.reconnectAttempts = 0
+            }
         }
     }
 

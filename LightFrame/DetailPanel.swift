@@ -6,7 +6,9 @@ struct DetailPanel: View {
 
     var body: some View {
         Group {
-            if let photo = appState.lastTappedPhoto {
+            if let item = appState.lastTappedTVOnlyItem {
+                TVOnlyDetailView(item: item)
+            } else if let photo = appState.lastTappedPhoto {
                 PhotoDetailView(photo: photo)
             } else {
                 EmptyDetailView()
@@ -27,6 +29,8 @@ struct PhotoDetailView: View {
     @State private var editedStyle: MatteStyle = .flexible
     @State private var editedColor: MatteColor = .warm
     @State private var isSaving: Bool = false
+    @State private var isUpdatingMatte: Bool = false
+    @State private var isDisplaying: Bool = false
     @State private var saveMessage: String?
 
     // Upload modal state for the "Send to TV" button
@@ -131,9 +135,33 @@ struct PhotoDetailView: View {
                     .buttonStyle(.borderedProminent)
                     .disabled(!hasChanges || isSaving || !photo.isJPEG)
 
+                    // Update Matte on TV — pushes the matte change without re-uploading
+                    if photo.isOnTV && hasChanges {
+                        Button { updateMatteOnTV() } label: {
+                            HStack {
+                                if isUpdatingMatte { ProgressView().scaleEffect(0.7) }
+                                Text(isUpdatingMatte ? "Updating..." : "Update Matte on TV")
+                            }
+                            .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.bordered)
+                        .disabled(!isConnected || isUpdatingMatte)
+                    }
+
+                    // Display on TV — sets this photo as the currently displayed artwork
+                    if photo.isOnTV {
+                        Button { displayOnTV() } label: {
+                            HStack {
+                                if isDisplaying { ProgressView().scaleEffect(0.7) }
+                                Text(isDisplaying ? "Setting..." : "Display on TV")
+                            }
+                            .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.bordered)
+                        .disabled(!isConnected || isDisplaying)
+                    }
+
                     // Send to TV — uploads this single photo via the upload modal
-                    // Shows "Re-send to TV" if already uploaded, which will
-                    // trigger the duplicate prompt inside the modal
                     Button { sendToTV() } label: {
                         Text(photo.isOnTV ? "Re-send to TV" : "Send to TV")
                             .frame(maxWidth: .infinity)
@@ -232,6 +260,53 @@ struct PhotoDetailView: View {
             } catch {
                 saveMessage = "Failed: \(error.localizedDescription)"
             }
+        }
+    }
+
+    // MARK: - Update Matte on TV
+    // Pushes the matte change to the TV using change_matte — no re-upload needed.
+    private func updateMatteOnTV() {
+        guard let conn = tvManager.connection,
+              conn.state == .connected,
+              let contentID = photo.tvContentID
+        else { return }
+
+        isUpdatingMatte = true
+        let newMatte = Matte(style: editedStyle, color: editedStyle == .none ? nil : editedColor)
+
+        Task {
+            do {
+                try await conn.changeMatte(contentID: contentID, matte: newMatte)
+                saveMessage = "✓ Matte updated on TV"
+            } catch {
+                saveMessage = "Failed: \(error.localizedDescription)"
+            }
+            isUpdatingMatte = false
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            saveMessage = nil
+        }
+    }
+
+    // MARK: - Display on TV
+    // Sets this photo as the currently displayed artwork on the TV.
+    private func displayOnTV() {
+        guard let conn = tvManager.connection,
+              conn.state == .connected,
+              let contentID = photo.tvContentID
+        else { return }
+
+        isDisplaying = true
+
+        Task {
+            do {
+                try await conn.selectPhoto(contentID: contentID)
+                saveMessage = "✓ Now displaying"
+            } catch {
+                saveMessage = "Failed: \(error.localizedDescription)"
+            }
+            isDisplaying = false
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            saveMessage = nil
         }
     }
 
@@ -359,6 +434,253 @@ struct ColorSwatchButton: View {
                 .lineLimit(1)
         }
         .onTapGesture { onTap() }
+    }
+}
+
+// MARK: - TV-Only Detail View
+// Shows details for a photo that exists only on the TV (no local file).
+// Supports Display on TV, Change Matte, and Remove from TV.
+struct TVOnlyDetailView: View {
+    @EnvironmentObject var appState: AppState
+    @EnvironmentObject var tvManager: TVConnectionManager
+
+    let item: TVOnlyItem
+
+    @State private var editedStyle: MatteStyle = .flexible
+    @State private var editedColor: MatteColor = .warm
+    @State private var isUpdatingMatte: Bool = false
+    @State private var isDisplaying: Bool = false
+    @State private var isDeleting: Bool = false
+    @State private var statusMessage: String?
+
+    var isConnected: Bool {
+        tvManager.connection?.state == .connected
+    }
+
+    var currentMatte: Matte {
+        Matte(style: editedStyle, color: editedStyle == .none ? nil : editedColor)
+    }
+
+    var hasMatteChanges: Bool {
+        editedStyle != (item.matte?.style ?? .flexible) ||
+        editedColor != (item.matte?.color ?? .warm)
+    }
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+
+                // MARK: Thumbnail Preview
+                if let data = item.thumbnailData, let nsImage = NSImage(data: data) {
+                    ZStack {
+                        Color.black
+                        Image(nsImage: nsImage)
+                            .resizable()
+                            .aspectRatio(contentMode: .fit)
+                    }
+                    .aspectRatio(16/9, contentMode: .fit)
+                    .clipShape(RoundedRectangle(cornerRadius: 3))
+                    .shadow(color: .black.opacity(0.35), radius: 6, x: 0, y: 3)
+                    .padding(.horizontal, 16)
+                    .padding(.top, 16)
+                } else {
+                    RoundedRectangle(cornerRadius: 3)
+                        .fill(Color.black.opacity(0.3))
+                        .aspectRatio(16/9, contentMode: .fit)
+                        .overlay(Image(systemName: "tv").font(.largeTitle).foregroundColor(.secondary))
+                        .padding(.horizontal, 16)
+                        .padding(.top, 16)
+                }
+
+                // MARK: Info
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(item.id)
+                        .font(.headline)
+                    HStack(spacing: 4) {
+                        Image(systemName: "icloud.fill")
+                            .foregroundColor(.blue)
+                            .font(.caption)
+                        Text("TV only — no local file")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                    if let matte = item.matte {
+                        Text("Matte: \(matte.displayName)")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                    if let w = item.width, let h = item.height {
+                        Text("\(w) × \(h)")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                }
+                .padding(.horizontal, 16)
+
+                Divider()
+
+                // MARK: Matte Style Picker
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Style")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .padding(.horizontal, 16)
+
+                    LazyVGrid(
+                        columns: [GridItem(.flexible()), GridItem(.flexible())],
+                        spacing: 8
+                    ) {
+                        ForEach(MatteStyle.allCases, id: \.self) { style in
+                            StyleButton(style: style, isSelected: editedStyle == style) {
+                                editedStyle = style
+                            }
+                        }
+                    }
+                    .padding(.horizontal, 16)
+                }
+
+                // MARK: Matte Color Picker
+                if editedStyle != .none {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Color")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                            .padding(.horizontal, 16)
+
+                        LazyVGrid(
+                            columns: Array(repeating: GridItem(.flexible()), count: 4),
+                            spacing: 8
+                        ) {
+                            ForEach(MatteColor.allCases, id: \.self) { color in
+                                ColorSwatchButton(color: color, isSelected: editedColor == color) {
+                                    editedColor = color
+                                }
+                            }
+                        }
+                        .padding(.horizontal, 16)
+                    }
+                }
+
+                Divider()
+
+                // MARK: Actions
+                VStack(spacing: 8) {
+                    // Update matte on TV
+                    if hasMatteChanges {
+                        Button { updateMatteOnTV() } label: {
+                            HStack {
+                                if isUpdatingMatte { ProgressView().scaleEffect(0.7) }
+                                Text(isUpdatingMatte ? "Updating..." : "Update Matte on TV")
+                            }
+                            .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(!isConnected || isUpdatingMatte)
+                    }
+
+                    // Display on TV
+                    Button { displayOnTV() } label: {
+                        HStack {
+                            if isDisplaying { ProgressView().scaleEffect(0.7) }
+                            Text(isDisplaying ? "Setting..." : "Display on TV")
+                        }
+                        .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(!isConnected || isDisplaying)
+
+                    // Remove from TV
+                    Button(role: .destructive) { removeFromTV() } label: {
+                        HStack {
+                            if isDeleting { ProgressView().scaleEffect(0.7) }
+                            Text(isDeleting ? "Removing..." : "Remove from TV")
+                        }
+                        .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(!isConnected || isDeleting)
+
+                    if let msg = statusMessage {
+                        Text(msg)
+                            .font(.caption)
+                            .foregroundColor(msg.contains("✓") ? .green : .red)
+                    }
+                }
+                .padding(.horizontal, 16)
+                .padding(.bottom, 20)
+            }
+        }
+        .onAppear { loadMatte() }
+        .onChange(of: item.id) { loadMatte() }
+    }
+
+    private func loadMatte() {
+        editedStyle = item.matte?.style ?? .flexible
+        editedColor = item.matte?.color ?? .warm
+        statusMessage = nil
+    }
+
+    private func updateMatteOnTV() {
+        guard let conn = tvManager.connection else { return }
+        isUpdatingMatte = true
+        let newMatte = currentMatte
+
+        Task {
+            do {
+                try await conn.changeMatte(contentID: item.id, matte: newMatte)
+                // Update the item in appState
+                if let index = appState.tvOnlyItems.firstIndex(where: { $0.id == item.id }) {
+                    appState.tvOnlyItems[index].matte = newMatte
+                    appState.lastTappedTVOnlyItem = appState.tvOnlyItems[index]
+                }
+                statusMessage = "✓ Matte updated"
+            } catch {
+                statusMessage = "Failed: \(error.localizedDescription)"
+            }
+            isUpdatingMatte = false
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            statusMessage = nil
+        }
+    }
+
+    private func displayOnTV() {
+        guard let conn = tvManager.connection else { return }
+        isDisplaying = true
+
+        Task {
+            do {
+                try await conn.selectPhoto(contentID: item.id)
+                statusMessage = "✓ Now displaying"
+            } catch {
+                statusMessage = "Failed: \(error.localizedDescription)"
+            }
+            isDisplaying = false
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            statusMessage = nil
+        }
+    }
+
+    private func removeFromTV() {
+        guard let conn = tvManager.connection else { return }
+        isDeleting = true
+
+        Task {
+            do {
+                try await conn.deletePhotos(contentIDs: [item.id])
+                appState.tvOnlyItems.removeAll { $0.id == item.id }
+                appState.lastTappedTVOnlyItem = nil
+                statusMessage = "✓ Removed"
+            } catch {
+                let msg = error.localizedDescription
+                if msg.contains("-10") {
+                    appState.tvOnlyItems.removeAll { $0.id == item.id }
+                    appState.lastTappedTVOnlyItem = nil
+                } else {
+                    statusMessage = "Failed: \(msg)"
+                }
+            }
+            isDeleting = false
+        }
     }
 }
 
