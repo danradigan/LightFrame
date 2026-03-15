@@ -50,8 +50,6 @@ enum MatteColor: String, CaseIterable, Codable {
     case byzantine = "byzantine"
     case lavender  = "lavender"
     case redOrange = "redorange"
-    case skyBlue   = "skyblue"
-    case turquoise = "turquoise"
 
     var displayName: String {
         switch self {
@@ -69,31 +67,26 @@ enum MatteColor: String, CaseIterable, Codable {
         case .byzantine: return "Byzantine"
         case .lavender:  return "Lavender"
         case .redOrange: return "Red Orange"
-        case .skyBlue:   return "Sky Blue"
-        case .turquoise: return "Turquoise"
         }
     }
 
-    // RGB color values used to render the matte preview in the photo grid.
-    // These are approximate matches to the actual colors on the Samsung Frame TV.
+    // RGB color values matched to the Samsung Frame TV swatch reference.
     var previewColor: Color {
         switch self {
-        case .black:     return Color(red: 0.05, green: 0.05, blue: 0.05)
-        case .neutral:   return Color(red: 0.80, green: 0.78, blue: 0.74)
-        case .antique:   return Color(red: 0.90, green: 0.85, blue: 0.72)
-        case .warm:      return Color(red: 0.93, green: 0.88, blue: 0.78)
-        case .polar:     return Color(red: 0.93, green: 0.95, blue: 0.97)
-        case .sand:      return Color(red: 0.86, green: 0.80, blue: 0.66)
-        case .seafoam:   return Color(red: 0.72, green: 0.85, blue: 0.80)
-        case .sage:      return Color(red: 0.65, green: 0.75, blue: 0.62)
-        case .burgundy:  return Color(red: 0.48, green: 0.12, blue: 0.18)
-        case .navy:      return Color(red: 0.10, green: 0.18, blue: 0.35)
-        case .apricot:   return Color(red: 0.97, green: 0.72, blue: 0.52)
-        case .byzantine: return Color(red: 0.55, green: 0.20, blue: 0.50)
-        case .lavender:  return Color(red: 0.75, green: 0.68, blue: 0.88)
-        case .redOrange: return Color(red: 0.88, green: 0.30, blue: 0.15)
-        case .skyBlue:   return Color(red: 0.53, green: 0.75, blue: 0.92)
-        case .turquoise: return Color(red: 0.25, green: 0.75, blue: 0.75)
+        case .black:     return Color(red: 0.08, green: 0.08, blue: 0.08)
+        case .neutral:   return Color(red: 0.56, green: 0.55, blue: 0.53)
+        case .antique:   return Color(red: 0.84, green: 0.81, blue: 0.77)
+        case .warm:      return Color(red: 0.89, green: 0.87, blue: 0.83)
+        case .polar:     return Color(red: 0.89, green: 0.90, blue: 0.91)
+        case .sand:      return Color(red: 0.68, green: 0.63, blue: 0.49)
+        case .seafoam:   return Color(red: 0.40, green: 0.52, blue: 0.51)
+        case .sage:      return Color(red: 0.62, green: 0.67, blue: 0.55)
+        case .burgundy:  return Color(red: 0.38, green: 0.13, blue: 0.16)
+        case .navy:      return Color(red: 0.10, green: 0.15, blue: 0.33)
+        case .apricot:   return Color(red: 0.90, green: 0.70, blue: 0.32)
+        case .byzantine: return Color(red: 0.50, green: 0.26, blue: 0.52)
+        case .lavender:  return Color(red: 0.69, green: 0.64, blue: 0.68)
+        case .redOrange: return Color(red: 0.84, green: 0.38, blue: 0.24)
         }
     }
 }
