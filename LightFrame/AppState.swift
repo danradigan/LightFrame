@@ -15,6 +15,21 @@ class AppState: ObservableObject {
 
     // MARK: - TVs
     @Published var tvs: [TV] = []
+
+    // selectedTV is the TV the user has chosen in the sidebar.
+    //
+    // CRITICAL: TVConnectionManager observes $selectedTV to know when to switch
+    // connections. We must ONLY write to selectedTV when the user actually picks
+    // a different TV. Writing it for any other reason (e.g. reachability updates)
+    // causes TVConnectionManager to disconnect and reconnect — the reconnect loop.
+    //
+    // Rule: only these three places should ever assign selectedTV:
+    //   1. load() — restoring saved state on launch
+    //   2. addTV() — after adding a new TV with no existing selection
+    //   3. removeTV() — after removing the currently selected TV
+    //   4. TVRowView.onTapGesture — user picks a different TV
+    //
+    // updateReachability() deliberately does NOT touch selectedTV. See that method.
     @Published var selectedTV: TV?
 
     // MARK: - Photo Selection
@@ -176,12 +191,15 @@ class AppState: ObservableObject {
     func addTV(name: String, ipAddress: String) {
         let tv = TV(id: UUID(), name: name, ipAddress: ipAddress, token: nil, isReachable: false)
         tvs.append(tv)
+        // Only set selectedTV if nothing is selected yet.
+        // Never change selectedTV as a side effect of adding a non-first TV.
         if selectedTV == nil { selectedTV = tv }
         save()
     }
 
     func removeTV(_ tv: TV) {
         tvs.removeAll { $0.id == tv.id }
+        // Only update selectedTV when we remove the currently selected one
         if selectedTV?.id == tv.id { selectedTV = tvs.first }
         save()
     }
@@ -189,14 +207,29 @@ class AppState: ObservableObject {
     func updateToken(_ token: String, for tv: TV) {
         guard let index = tvs.firstIndex(where: { $0.id == tv.id }) else { return }
         tvs[index].token = token
-        if selectedTV?.id == tv.id { selectedTV = tvs[index] }
+        // DO NOT touch selectedTV here — it would trigger TVConnectionManager to reconnect.
+        // The token is stored in tvs[]; TVConnection reads it via tv.webSocketURL on next connect.
         save()
     }
 
+    // MARK: - updateReachability
+    // Updates the green/grey dot for a TV.
+    //
+    // THE LOOP-FREE RULE:
+    // This method ONLY writes to tvs[]. It never touches selectedTV.
+    //
+    // Why this matters: TVConnectionManager observes $selectedTV. If we wrote
+    // selectedTV here, it would re-fire that publisher, causing TVConnectionManager
+    // to call switchTo() → disconnect() → connect() → updateReachability() → repeat.
+    //
+    // The sidebar dot reads tv.isReachable from tvs[], not from selectedTV, so
+    // updating tvs[] is sufficient to refresh the UI.
     func updateReachability(_ reachable: Bool, for tv: TV) {
         guard let index = tvs.firstIndex(where: { $0.id == tv.id }) else { return }
+        // Only write if the value actually changed — avoids unnecessary publishes
+        guard tvs[index].isReachable != reachable else { return }
         tvs[index].isReachable = reachable
-        if selectedTV?.id == tv.id { selectedTV = tvs[index] }
+        // Intentionally NOT updating selectedTV — see comment above
     }
 
     func setContentID(_ contentID: String, for photo: Photo, in collection: Collection) {
@@ -322,7 +355,15 @@ class AppState: ObservableObject {
 
         tvs = decoded.tvs
         selectedCollection = collections.first
-        selectedTV = tvs.first
+
+        // Restore selectedTV — this is one of the three allowed places to set it.
+        // We clear isReachable on load because we haven't verified connectivity yet.
+        selectedTV = tvs.first.map { tv in
+            var t = tv
+            t.isReachable = false
+            return t
+        }
+
         save()
     }
 }

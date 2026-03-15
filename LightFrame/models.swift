@@ -186,10 +186,15 @@ struct TV: Identifiable, Codable, Equatable {
     var token: String?          // Pairing token saved after first connection approval
     var isReachable: Bool       // Updated when the app tries to connect
 
-    // The WebSocket URL used to connect to this TV
-    // Samsung Frame TVs use wss:// (secure WebSocket) on port 8002
-    var webSocketURL: URL? {
-        // "RnJhbWVTeW5j" is "LightFrame" encoded in base64 — identifies our app to the TV
+    // The WebSocket URLs used to connect to this TV.
+    // Samsung Frame TVs require TWO separate WebSocket channels:
+    //   - samsung.remote.control  — for pairing/token exchange (port 8002)
+    //   - com.samsung.art-app     — for all art mode commands (port 8002)
+    // On 2022+ models, sending art commands to the remote.control channel
+    // silently hangs with no response. The dedicated art channel must be used.
+
+    // Used during initial pairing to get our token
+    var pairingURL: URL? {
         let appName = "TGlnaHRGcmFtZQ=="
         var urlString = "wss://\(ipAddress):8002/api/v2/channels/samsung.remote.control?name=\(appName)"
         if let token = token {
@@ -197,6 +202,19 @@ struct TV: Identifiable, Codable, Equatable {
         }
         return URL(string: urlString)
     }
+
+    // Used for all art mode commands after pairing
+    var artChannelURL: URL? {
+        let appName = "TGlnaHRGcmFtZQ=="
+        var urlString = "wss://\(ipAddress):8002/api/v2/channels/com.samsung.art-app?name=\(appName)"
+        if let token = token {
+            urlString += "&token=\(token)"
+        }
+        return URL(string: urlString)
+    }
+
+    // Legacy alias — points to pairing URL for backwards compatibility
+    var webSocketURL: URL? { pairingURL }
 }
 
 // MARK: - Slideshow Order

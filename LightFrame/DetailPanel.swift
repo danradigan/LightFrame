@@ -20,6 +20,8 @@ struct DetailPanel: View {
 // MARK: - Photo Detail View
 struct PhotoDetailView: View {
     @EnvironmentObject var appState: AppState
+    @EnvironmentObject var tvManager: TVConnectionManager
+
     let photo: Photo
 
     @State private var editedStyle: MatteStyle = .flexible
@@ -27,9 +29,16 @@ struct PhotoDetailView: View {
     @State private var isSaving: Bool = false
     @State private var saveMessage: String?
 
+    // Upload modal state for the "Send to TV" button
+    @State private var uploadEngine: UploadEngine? = nil
+
     var hasChanges: Bool {
         editedStyle != (photo.matte?.style ?? .flexible) ||
         editedColor != (photo.matte?.color ?? .warm)
+    }
+
+    var isConnected: Bool {
+        tvManager.connection?.state == .connected
     }
 
     var body: some View {
@@ -37,7 +46,6 @@ struct PhotoDetailView: View {
             VStack(alignment: .leading, spacing: 16) {
 
                 // MARK: Large Matte Preview
-                // GeometryReader fills the full available panel width dynamically
                 GeometryReader { geometry in
                     MattePreviewView(
                         photo: photoWithEdits,
@@ -111,6 +119,8 @@ struct PhotoDetailView: View {
 
                 // MARK: Action Buttons
                 VStack(spacing: 8) {
+
+                    // Save Matte — writes the matte choice into the file's EXIF
                     Button { saveMatte() } label: {
                         HStack {
                             if isSaving { ProgressView().scaleEffect(0.7) }
@@ -121,18 +131,23 @@ struct PhotoDetailView: View {
                     .buttonStyle(.borderedProminent)
                     .disabled(!hasChanges || isSaving || !photo.isJPEG)
 
-                    Button { } label: {
-                        Text("Send to TV").frame(maxWidth: .infinity)
+                    // Send to TV — uploads this single photo via the upload modal
+                    // Shows "Re-send to TV" if already uploaded, which will
+                    // trigger the duplicate prompt inside the modal
+                    Button { sendToTV() } label: {
+                        Text(photo.isOnTV ? "Re-send to TV" : "Send to TV")
+                            .frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.bordered)
-                    .disabled(!(appState.selectedTV?.isReachable ?? false))
+                    .disabled(!isConnected)
 
+                    // Remove from TV — deletes the photo from the TV's art library
                     if photo.isOnTV {
-                        Button(role: .destructive) { } label: {
+                        Button(role: .destructive) { removeFromTV() } label: {
                             Text("Remove from TV").frame(maxWidth: .infinity)
                         }
                         .buttonStyle(.bordered)
-                        .disabled(!(appState.selectedTV?.isReachable ?? false))
+                        .disabled(!isConnected)
                     }
 
                     if let message = saveMessage {
@@ -153,8 +168,74 @@ struct PhotoDetailView: View {
         }
         .onAppear { loadCurrentMatte() }
         .onChange(of: photo.id) { loadCurrentMatte() }
+        // Upload modal for "Send to TV"
+        .sheet(item: $uploadEngine) { engine in
+            UploadModal(engine: engine) {
+                uploadEngine = nil
+            }
+        }
     }
 
+    // MARK: - Send to TV
+    private func sendToTV() {
+        guard let collection = appState.collections.first(where: { col in
+            col.photos.contains(where: { $0.id == photo.id })
+        }),
+        let conn = tvManager.connection,
+        conn.state == .connected,
+        let tv = appState.selectedTV
+        else { return }
+
+        let syncStore = SyncStoreManager.shared.store(for: tv)
+        let engine = UploadEngine(
+            connection: conn,
+            appState: appState,
+            syncStore: syncStore
+        )
+        uploadEngine = engine
+
+        Task {
+            await engine.start(photos: [photo], collection: collection)
+        }
+    }
+
+    // MARK: - Remove from TV
+    // Deletes the photo from the TV and clears its content ID in AppState and SyncStore.
+    private func removeFromTV() {
+        guard let conn = tvManager.connection,
+              conn.state == .connected,
+              let contentID = photo.tvContentID,
+              let collection = appState.collections.first(where: { col in
+                  col.photos.contains(where: { $0.id == photo.id })
+              }),
+              let tv = appState.selectedTV
+        else { return }
+
+        Task {
+            do {
+                try await conn.deletePhotos(contentIDs: [contentID])
+
+                // Clear the content ID in SyncStore
+                let syncStore = SyncStoreManager.shared.store(for: tv)
+                syncStore.recordDeletion(filename: photo.filename)
+
+                // Clear isOnTV in AppState so the grid dot updates immediately
+                var updated = photo
+                updated.isOnTV = false
+                updated.tvContentID = nil
+                appState.updatePhotoInPlace(updated, in: collection)
+
+                saveMessage = "✓ Removed from TV"
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                saveMessage = nil
+
+            } catch {
+                saveMessage = "Failed: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    // MARK: - Computed
     var photoWithEdits: Photo {
         var copy = photo
         copy.matte = Matte(style: editedStyle, color: editedStyle == .none ? nil : editedColor)
@@ -167,6 +248,7 @@ struct PhotoDetailView: View {
         saveMessage = nil
     }
 
+    // MARK: - Save Matte (unchanged)
     private func saveMatte() {
         guard photo.isJPEG else { return }
         isSaving = true
@@ -175,13 +257,8 @@ struct PhotoDetailView: View {
         let currentPhoto = photo
 
         Task {
-            // Returns (success, updatedFileData)
             let result: (Bool, Data?) = await withCheckedContinuation { continuation in
                 DispatchQueue.global(qos: .userInitiated).async {
-
-                    // Open security scope on the FOLDER bookmark.
-                    // Individual file URLs don't carry security scope —
-                    // we must open the parent folder's bookmark instead.
                     var folderURL: URL? = nil
                     var accessGranted = false
 
@@ -211,14 +288,11 @@ struct PhotoDetailView: View {
                         }
                     }
 
-                    // Write the matte EXIF tag to the file
                     guard EXIFManager.writeMatte(newMatte, to: photoURL) else {
                         continuation.resume(returning: (false, nil))
                         return
                     }
 
-                    // Read back the updated file data so we can refresh
-                    // the in-memory thumbnail without a full rescan
                     let updatedData = try? Data(contentsOf: photoURL)
                     continuation.resume(returning: (true, updatedData))
                 }
@@ -229,8 +303,6 @@ struct PhotoDetailView: View {
             saveMessage = writeSuccess ? "✓ Saved" : "Failed to save"
 
             if writeSuccess {
-                // Surgically update just this one photo in memory —
-                // no need to rescan the entire collection
                 appState.updateMatte(newMatte, for: currentPhoto, newData: updatedData)
             }
 

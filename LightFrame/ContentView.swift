@@ -10,9 +10,6 @@ struct ContentView: View {
     @State private var toastMessage: String = ""
     @State private var showToast: Bool = false
 
-    @State private var slideshowOrder: SlideshowOrder = .random
-    @State private var slideshowInterval: SlideshowInterval = .fifteenMinutes
-
     init(appState: AppState) {
         _tvManager = StateObject(wrappedValue: TVConnectionManager(appState: appState))
     }
@@ -61,7 +58,7 @@ struct ContentView: View {
                         .foregroundColor(.secondary)
 
                     // Order toggle
-                    Picker("", selection: $slideshowOrder) {
+                    Picker("", selection: $tvManager.currentSlideshowOrder) {
                         ForEach(SlideshowOrder.allCases, id: \.self) { order in
                             Text(order.displayName).tag(order)
                         }
@@ -69,25 +66,25 @@ struct ContentView: View {
                     .pickerStyle(.segmented)
                     .frame(width: 160)
                     .disabled(!isConnected)
-                    .onChange(of: slideshowOrder) {
+                    .onChange(of: tvManager.currentSlideshowOrder) {
                         Task {
-                            let success = await tvManager.setSlideshowOrder(slideshowOrder)
-                            if success { showConfirmation("Order set to \(slideshowOrder.displayName)") }
+                            let success = await tvManager.setSlideshowOrder(tvManager.currentSlideshowOrder)
+                            if success { showConfirmation("Order set to \(tvManager.currentSlideshowOrder.displayName)") }
                         }
                     }
 
                     // Interval picker
-                    Picker("", selection: $slideshowInterval) {
+                    Picker("", selection: $tvManager.currentSlideshowInterval) {
                         ForEach(SlideshowInterval.allCases, id: \.self) { interval in
                             Text(interval.displayName).tag(interval)
                         }
                     }
                     .frame(width: 120)
                     .disabled(!isConnected)
-                    .onChange(of: slideshowInterval) {
+                    .onChange(of: tvManager.currentSlideshowInterval) {
                         Task {
-                            let success = await tvManager.setSlideshowInterval(slideshowInterval)
-                            if success { showConfirmation("Interval set to \(slideshowInterval.displayName)") }
+                            let success = await tvManager.setSlideshowInterval(tvManager.currentSlideshowInterval)
+                            if success { showConfirmation("Interval set to \(tvManager.currentSlideshowInterval.displayName)") }
                         }
                     }
                 }

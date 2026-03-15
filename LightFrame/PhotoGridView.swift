@@ -6,6 +6,12 @@ import SwiftUI
 // Photos without a matte show aspect-fit on black background.
 struct PhotoGridView: View {
     @EnvironmentObject var appState: AppState
+    @EnvironmentObject var tvManager: TVConnectionManager
+
+    // The UploadEngine driving the current upload session.
+    // Non-nil while an upload is active — used as the sheet item trigger.
+    // Recreated each time an upload starts so state is always fresh.
+    @State private var uploadEngine: UploadEngine? = nil
 
     var columns: [GridItem] {
         [GridItem(.adaptive(
@@ -18,8 +24,6 @@ struct PhotoGridView: View {
         VStack(spacing: 0) {
 
             // MARK: Tab Bar
-            // Uses an underline indicator instead of a background highlight
-            // to avoid the blue box appearance
             HStack(spacing: 0) {
                 ForEach(GridFilter.allCases, id: \.self) { filter in
                     Button {
@@ -35,7 +39,6 @@ struct PhotoGridView: View {
                                 .padding(.vertical, 8)
                                 .padding(.horizontal, 16)
 
-                            // Active tab indicator — thin line, not a box
                             Rectangle()
                                 .fill(appState.gridFilter == filter
                                       ? Color.accentColor
@@ -46,8 +49,11 @@ struct PhotoGridView: View {
                     .buttonStyle(.plain)
                 }
                 Spacer()
-                UploadControlsView()
-                    .padding(.trailing, 12)
+                UploadControlsView(
+                    onUploadSelected: startUploadSelected,
+                    onUploadAll: startUploadAll
+                )
+                .padding(.trailing, 12)
             }
             .background(Color(NSColor.windowBackgroundColor))
 
@@ -68,36 +74,19 @@ struct PhotoGridView: View {
                     .padding(16)
                 }
 
-                if appState.isUploading {
-                    UploadProgressView()
-                }
-
                 // MARK: Bottom Status Bar + Thumbnail Slider
-                // The divider above this bar pulses when scanning — no extra UI needed,
-                // just a subtle animation on the existing separator line.
                 VStack(spacing: 0) {
-
-                    // Pulsing divider — replaces the static Divider() when scanning.
-                    // We animate the opacity to create a gentle breathing effect.
-                    // This is less intrusive than a full progress bar but still communicates activity.
                     if appState.isScanning {
-                        // A colored rectangle that fades in and out repeatedly
-                        // using SwiftUI's .repeatForever animation
                         PulsingDivider()
                     } else {
-                        // When not scanning, just show a normal static divider line
                         Divider()
                     }
 
                     HStack {
-                        // Status text — e.g. "273 photos · 12 on TV · 3 selected"
                         Text(statusText)
                             .font(.caption)
                             .foregroundColor(.secondary)
                         Spacer()
-
-                        // Thumbnail size slider — works like Lightroom's grid size control.
-                        // The small photo icon on the left and large on the right hint at direction.
                         HStack(spacing: 6) {
                             Image(systemName: "photo")
                                 .font(.caption2)
@@ -115,38 +104,80 @@ struct PhotoGridView: View {
                 }
             }
         }
+        // MARK: Upload Modal Sheet
+        // sheet(item:) guarantees the engine is non-nil when the sheet renders —
+        // unlike sheet(isPresented:) which can render before the @State update lands.
+        .sheet(item: $uploadEngine) { engine in
+            UploadModal(engine: engine) {
+                uploadEngine = nil
+            }
+        }
     }
-    // MARK: - Pulsing Divider
-    // A 2pt tall colored line that pulses (fades in and out) to indicate
-    // background activity like a folder scan.
-    // This replaces the normal Divider() above the status bar during scanning.
-    //
-    // How the animation works:
-    // @State var opacity starts at 1.0
-    // .onAppear triggers an animation that changes opacity from 1.0 → 0.3 → 1.0
-    // .repeatForever keeps it looping until the view disappears
-    // When scanning finishes, this view is replaced by a normal Divider()
-    struct PulsingDivider: View {
 
-        // Tracks the current opacity — SwiftUI animates changes to this automatically
+    // MARK: - Start Upload: Selected Photos
+    private func startUploadSelected() {
+        guard let collection = appState.selectedCollection,
+              let conn = tvManager.connection,
+              conn.state == .connected
+        else { return }
+
+        // Only upload photos not already on the TV
+        // Photos that ARE on the TV will still appear in the queue —
+        // they'll trigger the duplicate prompt when reached
+        let photosToUpload = appState.selectedPhotos
+
+        guard !photosToUpload.isEmpty else { return }
+
+        beginUpload(photos: photosToUpload, collection: collection, connection: conn)
+    }
+
+    // MARK: - Start Upload: All Photos
+    private func startUploadAll() {
+        guard let collection = appState.selectedCollection,
+              let conn = tvManager.connection,
+              conn.state == .connected
+        else { return }
+
+        // "Upload All" only queues photos not yet on the TV.
+        // Photos already there are excluded entirely — no duplicate prompt.
+        let photosToUpload = appState.filteredPhotos.filter { !$0.isOnTV }
+
+        guard !photosToUpload.isEmpty else { return }
+
+        beginUpload(photos: photosToUpload, collection: collection, connection: conn)
+    }
+
+    // MARK: - Begin Upload Session
+    private func beginUpload(photos: [Photo], collection: Collection, connection: TVConnection) {
+        guard let tv = appState.selectedTV else { return }
+
+        let syncStore = SyncStoreManager.shared.store(for: tv)
+        let engine = UploadEngine(
+            connection: connection,
+            appState: appState,
+            syncStore: syncStore
+        )
+
+        // Set the engine first — this triggers the sheet to appear with a valid engine
+        uploadEngine = engine
+
+        // Run the upload in a Task so we don't block the UI
+        Task {
+            await engine.start(photos: photos, collection: collection)
+        }
+    }
+
+    // MARK: - Pulsing Divider (scanning indicator)
+    struct PulsingDivider: View {
         @State private var opacity: Double = 1.0
 
         var body: some View {
             Rectangle()
-                // Accent color (blue) matches the app's action color
                 .fill(Color.accentColor)
-                // 2pt height — same visual weight as a normal Divider
                 .frame(height: 2)
-                // Animate the opacity to create the pulsing effect
                 .opacity(opacity)
                 .onAppear {
-                    // withAnimation tells SwiftUI to smoothly transition opacity changes
-                    // .easeInOut means it accelerates then decelerates — feels organic
-                    // .repeatForever(autoreverses: true) means it goes 1.0→0.3→1.0 forever
-                    withAnimation(
-                        .easeInOut(duration: 1.0)
-                        .repeatForever(autoreverses: true)
-                    ) {
+                    withAnimation(.easeInOut(duration: 1.0).repeatForever(autoreverses: true)) {
                         opacity = 0.3
                     }
                 }
@@ -176,40 +207,28 @@ struct PhotoGridView: View {
 }
 
 // MARK: - Photo Thumbnail
-// A single cell in the photo grid.
-// Every cell is strictly 16:9 — this matches the TV's screen ratio
-// so thumbnails look exactly like they will on the TV.
-//
-// We always use MattePreviewView here because it already handles both cases:
-// - No matte: photo aspect-fits on black background (expands until hits one edge)
-// - Has matte: photo with colored border and bevel
 struct PhotoThumbnailView: View {
     @EnvironmentObject var appState: AppState
     let photo: Photo
 
-    // Check if this photo is currently selected in the grid
     var isSelected: Bool { appState.selectedPhotoIDs.contains(photo.id) }
 
     var body: some View {
-        // MattePreviewView handles all rendering — matte or no matte
         MattePreviewView(photo: photo, size: appState.thumbnailSize)
-            // Force every cell to exact 16:9 dimensions
             .frame(
                 width: appState.thumbnailSize,
                 height: appState.thumbnailSize * 9 / 16
             )
-            // Blue selection ring when this photo is selected
             .overlay(
                 RoundedRectangle(cornerRadius: 3)
                     .stroke(isSelected ? Color.accentColor : Color.clear, lineWidth: 2)
             )
-            // Slight shrink when selected gives a satisfying tap feel
             .scaleEffect(isSelected ? 0.97 : 1.0)
             .animation(.easeInOut(duration: 0.1), value: isSelected)
-            // Suppress the default macOS blue focus ring that appears on click
             .focusable(false)
     }
 }
+
 // MARK: - Empty Grid View
 struct EmptyGridView: View {
     @EnvironmentObject var appState: AppState
@@ -239,11 +258,25 @@ struct EmptyGridView: View {
 }
 
 // MARK: - Upload Controls
+// The Scan / Upload buttons in the grid toolbar.
+// Now takes explicit action closures rather than embedding upload logic here.
 struct UploadControlsView: View {
     @EnvironmentObject var appState: AppState
+    @EnvironmentObject var tvManager: TVConnectionManager
 
-    var isConnected: Bool { appState.selectedTV?.isReachable ?? false }
+    let onUploadSelected: () -> Void
+    let onUploadAll: () -> Void
+
+    var isConnected: Bool {
+        tvManager.connection?.state == .connected
+    }
+
     var hasSelection: Bool { !appState.selectedPhotoIDs.isEmpty }
+
+    // Count of photos not yet on the TV (what "Upload All" will act on)
+    var notOnTVCount: Int {
+        appState.filteredPhotos.filter { !$0.isOnTV }.count
+    }
 
     var body: some View {
         HStack(spacing: 8) {
@@ -252,24 +285,28 @@ struct UploadControlsView: View {
             }
             .disabled(appState.selectedCollection == nil || appState.isScanning)
 
+            // "Upload Selected" only shows when photos are selected
             if hasSelection {
                 Button("Upload Selected (\(appState.selectedPhotoIDs.count))") {
-                    // Wired up in upload engine
+                    onUploadSelected()
                 }
-                .disabled(!isConnected || appState.isUploading)
+                .disabled(!isConnected)
             }
 
-            Button("Upload All") {
-                // Wired up in upload engine
+            // "Upload All" shows the count of photos not yet on the TV
+            if notOnTVCount > 0 {
+                Button("Upload All (\(notOnTVCount))") {
+                    onUploadAll()
+                }
+                .disabled(!isConnected)
             }
-            .disabled(!isConnected || appState.isUploading || appState.filteredPhotos.isEmpty)
         }
         .buttonStyle(.bordered)
         .opacity(isConnected ? 1.0 : 0.4)
     }
 }
 
-// MARK: - Upload Progress View
+// MARK: - Upload Progress View (inline, not used when modal is active)
 struct UploadProgressView: View {
     @EnvironmentObject var appState: AppState
 
