@@ -3,37 +3,48 @@ import SwiftUI
 import Combine
 
 // MARK: - TVConnectionManager
-// Manages the active WebSocket connection to the selected TV.
-// Automatically connects when the selected TV changes.
-// Updates AppState reachability so the green dot reflects real connection state.
+//
+// Manages the active connection to the selected TV.
+//
+// SamsungArtService is the SOLE connection path.
+// Legacy TVConnection has been removed — all callers go through
+// tvManager wrapper methods which delegate to artService.
+//
 @MainActor
 class TVConnectionManager: ObservableObject {
 
-    @Published var connection: TVConnection?
+    // MARK: - Published State
     @Published var statusMessage: String = ""
 
-    // Track current slideshow settings so we can always send both
-    // duration and type together in one set_slideshow_status call.
-    // The Python library requires both in a single request — sending them
-    // separately causes each call to overwrite the other's setting.
+    // Protocol layer — the only connection path
+    @Published var artService: SamsungArtService
+
+    // Slideshow tracking
     @Published var currentSlideshowOrder: SlideshowOrder       = .random
     @Published var currentSlideshowInterval: SlideshowInterval = .fifteenMinutes
 
+    // MARK: - Private
     private var connectedTVID: UUID? = nil
     private var appState: AppState
     private var cancellables = Set<AnyCancellable>()
     private var reconnectTask: Task<Void, Never>? = nil
     private var reconnectAttempts: Int = 0
     private static let maxReconnectAttempts = 5
+
+    // MARK: - Computed
+    var isConnected: Bool {
+        artService.isConnected
+    }
+
     // MARK: - Init
     init(appState: AppState) {
         self.appState = appState
+        self.artService = SamsungArtService()
         observeSelectedTV()
+        observeArtServiceState()
     }
 
     // MARK: - Observe Selected TV
-    // Maps to UUID before removeDuplicates() so reachability updates
-    // (which change tv.isReachable but not tv.id) don't trigger reconnects.
     private func observeSelectedTV() {
         appState.$selectedTV
             .map { $0?.id }
@@ -48,62 +59,74 @@ class TVConnectionManager: ObservableObject {
             .store(in: &cancellables)
     }
 
+    // MARK: - Observe Art Service State
+    //
+    // Keeps the green dot and footer controls in sync with the protocol layer.
+    // artService.$connectionState fires immediately on connect/disconnect,
+    // so the UI updates without any manual call to updateReachability.
+    //
+    private func observeArtServiceState() {
+        artService.$connectionState
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] state in
+                guard let self,
+                      let tvID = self.connectedTVID,
+                      let tv = self.appState.tvs.first(where: { $0.id == tvID })
+                else { return }
+                let reachable = state == .connected
+                self.appState.updateReachability(reachable, for: tv)
+            }
+            .store(in: &cancellables)
+    }
+
     // MARK: - Switch TV
     private func switchTo(tv: TV?) async {
         let incomingID = tv?.id
         guard incomingID != connectedTVID else { return }
         connectedTVID = incomingID
 
-        // Cancel any pending reconnect for the old TV
+        // Cancel any pending reconnect
         reconnectTask?.cancel()
         reconnectTask = nil
         reconnectAttempts = 0
 
-        connection?.disconnect()
-        connection = nil
+        // Disconnect old
+        artService.disconnect()
 
         guard let tv else {
             statusMessage = ""
             return
         }
 
-        let newConnection = TVConnection(tv: tv)
-        connection = newConnection
-
-        newConnection.$state
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] state in
-                guard let self else { return }
-                let reachable = state == .connected
-                self.appState.updateReachability(reachable, for: tv)
-                switch state {
-                case .connected:
-                    self.statusMessage = "Connected to \(tv.name)"
-                case .connecting:
-                    self.statusMessage = "Connecting to \(tv.name)..."
-                case .disconnected:
-                    if self.connectedTVID == tv.id {
-                        self.statusMessage = "\(tv.name) — Disconnected"
-                        // Auto-reconnect after a short delay
-                        self.scheduleReconnect(for: tv)
-                    }
-                case .error(let msg):
-                    self.statusMessage = "Error: \(msg)"
-                    // Also try to reconnect on errors
-                    if self.connectedTVID == tv.id {
-                        self.scheduleReconnect(for: tv)
-                    }
-                }
-            }
-            .store(in: &cancellables)
+        // ── Configure and connect ─────────────────────────────────────────
+        artService.configure(host: tv.ipAddress, port: 8002, token: tv.token)
+        artService.logHandler = { line in
+            #if DEBUG
+            print(line)
+            #endif
+        }
 
         statusMessage = "Connecting to \(tv.name)..."
-        await newConnection.connect()
 
-        // After connecting, read the TV's current slideshow status
-        // so the footer controls reflect reality
-        if newConnection.state == .connected {
+        do {
+            try await artService.connect()
+
+            // Update token if the new layer obtained one
+            if let newToken = artService.token, newToken != tv.token {
+                appState.updateToken(newToken, for: tv)
+            }
+
+            statusMessage = "Connected to \(tv.name)"
+            reconnectAttempts = 0
+
+            // Read slideshow status
             await readSlideshowStatus()
+
+        } catch {
+            let msg = error.localizedDescription
+            print("⚠️ Connect failed: \(msg)")
+            statusMessage = "Error: \(msg)"
+            scheduleReconnect(for: tv)
         }
     }
 
@@ -119,8 +142,6 @@ class TVConnectionManager: ObservableObject {
     }
 
     // MARK: - Auto-Reconnect
-    // Schedules a reconnect with exponential backoff (5s, 10s, 20s, 40s, 80s).
-    // Stops after maxReconnectAttempts to avoid infinite loops when the TV is truly off.
     private func scheduleReconnect(for tv: TV) {
         reconnectTask?.cancel()
         guard reconnectAttempts < Self.maxReconnectAttempts else {
@@ -139,49 +160,80 @@ class TVConnectionManager: ObservableObject {
         reconnectTask = Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: delay)
             guard let self, !Task.isCancelled, self.connectedTVID == tv.id else { return }
-
-            // Only reconnect if still disconnected
-            guard self.connection?.state != .connected else { return }
-
-            self.connection?.disconnect()
-            self.connection = nil
-            self.connectedTVID = nil  // Allow switchTo to proceed
+            self.connectedTVID = nil
             await self.switchTo(tv: tv)
-
-            // Reset attempts on successful connect
-            if self.connection?.state == .connected {
-                self.reconnectAttempts = 0
-            }
         }
     }
 
-    // MARK: - Slideshow
-    // Both order and interval must be sent together in one set_slideshow_status call.
-    // We track both values here so changing one still sends the other correctly.
+    // MARK: - API Methods
+    //
+    // These delegate to SamsungArtService. All callers in DetailPanel,
+    // PhotoGridView, and UploadEngine use these wrapper methods.
+    //
 
-    /// Reads the TV's current slideshow settings and updates our local tracking.
-    /// Called once after connecting so the footer controls match reality.
+    func deletePhotos(contentIDs: [String]) async throws {
+        try await artService.deleteArt(contentIDs: contentIDs)
+    }
+
+    func selectPhoto(contentID: String) async throws {
+        try await artService.selectImage(contentID: contentID)
+    }
+
+    func changeMatte(contentID: String, matte: Matte) async throws {
+        let matteToken = matte.apiToken
+        let portraitToken = matte.style != .none ? matteToken : nil
+        try await artService.changeMatte(
+            contentID: contentID,
+            matteID: matteToken,
+            portraitMatteID: portraitToken
+        )
+    }
+
+    func getMyPhotos() async throws -> [TVArtItem] {
+        try await artService.fetchMyPhotos()
+    }
+
+    func getAvailableArt(category: String? = nil) async throws -> [TVArtItem] {
+        try await artService.fetchArtList(category: category)
+    }
+
+    func getThumbnails(contentIDs: [String]) async throws -> [String: Data] {
+        try await artService.fetchThumbnails(contentIDs: contentIDs)
+    }
+
+    func uploadPhoto(imageData: Data, fileType: String, matte: Matte?) async throws -> String {
+        let matteToken = matte?.apiToken ?? "flexible_warm"
+        let portraitToken = matte?.apiToken ?? "flexible_warm"
+        return try await artService.uploadArt(
+            imageData: imageData,
+            fileType: fileType,
+            matteID: matteToken,
+            portraitMatteID: portraitToken
+        )
+    }
+
+    func getCurrentArtwork() async throws -> String? {
+        let inner = try await artService.fetchCurrentArtwork()
+        return inner.raw["content_id"] as? String
+    }
+
+    // MARK: - Slideshow
+
     func readSlideshowStatus() async {
-        guard let conn = connection, conn.state == .connected else { return }
         do {
-            if let status = try await conn.getParsedSlideshowStatus() {
-                // Parse interval from value string (e.g. "15" → .fifteenMinutes, "off" → default)
-                if let minutes = Int(status.value),
-                   let interval = SlideshowInterval(rawValue: minutes) {
-                    currentSlideshowInterval = interval
-                } else {
-                    // "off" or empty — keep the default
-                }
-                // Parse order from type string
-                if status.type == "shuffleslideshow" {
-                    currentSlideshowOrder = .random
-                } else if status.type == "slideshow" {
-                    currentSlideshowOrder = .inOrder
-                }
-                print("📺 Slideshow synced: interval=\(currentSlideshowInterval.displayName) order=\(currentSlideshowOrder.displayName)")
+            let status = try await artService.fetchSlideshowStatus()
+            if let minutes = status.minutes,
+               let interval = SlideshowInterval(rawValue: minutes) {
+                currentSlideshowInterval = interval
             }
+            if status.isShuffle {
+                currentSlideshowOrder = .random
+            } else if status.type == "slideshow" {
+                currentSlideshowOrder = .inOrder
+            }
+            print("📺 Slideshow synced: interval=\(currentSlideshowInterval.displayName) order=\(currentSlideshowOrder.displayName)")
         } catch {
-            print("📺 Could not read slideshow status: \(error.localizedDescription)")
+            print("📺 Slideshow read failed: \(error.localizedDescription)")
         }
     }
 
@@ -196,11 +248,10 @@ class TVConnectionManager: ObservableObject {
     }
 
     private func applySlideshowStatus() async -> Bool {
-        guard let conn = connection, conn.state == .connected else { return false }
         do {
-            try await conn.setSlideshowStatus(
-                order:    currentSlideshowOrder,
-                interval: currentSlideshowInterval
+            try await artService.setSlideshowStatus(
+                durationMinutes: currentSlideshowInterval.rawValue,
+                shuffle: currentSlideshowOrder == .random
             )
             return true
         } catch {

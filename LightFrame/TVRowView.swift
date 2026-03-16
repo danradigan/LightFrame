@@ -2,21 +2,20 @@
 //  TVRowView.swift
 //  LightFrame
 //
-//  Created by Dan Radigan on 3/14/26.
-//
-
 
 import SwiftUI
 
 // MARK: - TVRowView
 // Shows a single TV in the sidebar with connection status,
-// and a context menu for rename and remove actions.
+// and a context menu for rename, protocol tests, and remove.
 struct TVRowView: View {
     @EnvironmentObject var appState: AppState
+    @EnvironmentObject var tvManager: TVConnectionManager
     let tv: TV
 
     @State private var isRenaming = false
     @State private var renameName = ""
+    @State private var showProtocolTests = false
 
     var isSelected: Bool { appState.selectedTV?.id == tv.id }
 
@@ -46,9 +45,16 @@ struct TVRowView: View {
                 isRenaming = true
             }
             Divider()
+            Button("Protocol Tests…") {
+                showProtocolTests = true
+            }
+            Divider()
             Button("Remove", role: .destructive) {
                 appState.removeTV(tv)
             }
+        }
+        .sheet(isPresented: $showProtocolTests) {
+            ProtocolTestSheet(tv: tv, artService: tvManager.artService)
         }
         .alert("Rename TV", isPresented: $isRenaming) {
             TextField("Name", text: $renameName)
@@ -56,7 +62,6 @@ struct TVRowView: View {
             Button("Rename") {
                 let trimmed = renameName.trimmingCharacters(in: .whitespaces)
                 if !trimmed.isEmpty {
-                    // Find and update the TV in appState
                     if let index = appState.tvs.firstIndex(where: { $0.id == tv.id }) {
                         appState.tvs[index].name = trimmed
                         if appState.selectedTV?.id == tv.id {

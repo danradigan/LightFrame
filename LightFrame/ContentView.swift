@@ -15,7 +15,7 @@ struct ContentView: View {
     }
 
     var isConnected: Bool {
-        appState.selectedTV?.isReachable ?? false
+        tvManager.isConnected
     }
 
     var body: some View {
@@ -41,9 +41,9 @@ struct ContentView: View {
                 if let tv = appState.selectedTV {
                     HStack(spacing: 6) {
                         Circle()
-                            .fill(tv.isReachable ? Color.green : Color.gray)
+                            .fill(isConnected ? Color.green : Color.gray)
                             .frame(width: 7, height: 7)
-                        Text(tv.isReachable ? tv.name : "\(tv.name) — Offline")
+                        Text(isConnected ? tv.name : "\(tv.name) — Offline")
                             .font(.caption)
                             .foregroundColor(.secondary)
                     }
@@ -106,14 +106,6 @@ struct ContentView: View {
             .padding(.horizontal, 16)
             .padding(.vertical, 8)
             .background(Color(NSColor.windowBackgroundColor))
-        }
-        // Listen for token notifications from TVConnection
-        .onReceive(NotificationCenter.default.publisher(for: .tvTokenReceived)) { note in
-            guard let tvID = note.userInfo?["tvID"] as? UUID,
-                  let token = note.userInfo?["token"] as? String,
-                  let tv = appState.tvs.first(where: { $0.id == tvID })
-            else { return }
-            appState.updateToken(token, for: tv)
         }
     }
 

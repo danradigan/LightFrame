@@ -42,7 +42,7 @@ struct PhotoDetailView: View {
     }
 
     var isConnected: Bool {
-        tvManager.connection?.state == .connected
+        tvManager.isConnected
     }
 
     var body: some View {
@@ -209,14 +209,13 @@ struct PhotoDetailView: View {
         guard let collection = appState.collections.first(where: { col in
             col.photos.contains(where: { $0.id == photo.id })
         }),
-        let conn = tvManager.connection,
-        conn.state == .connected,
+        tvManager.isConnected,
         let tv = appState.selectedTV
         else { return }
 
         let syncStore = SyncStoreManager.shared.store(for: tv)
         let engine = UploadEngine(
-            connection: conn,
+            tvManager: tvManager,
             appState: appState,
             syncStore: syncStore
         )
@@ -230,8 +229,7 @@ struct PhotoDetailView: View {
     // MARK: - Remove from TV
     // Deletes the photo from the TV and clears its content ID in AppState and SyncStore.
     private func removeFromTV() {
-        guard let conn = tvManager.connection,
-              conn.state == .connected,
+        guard tvManager.isConnected,
               let contentID = photo.tvContentID,
               let collection = appState.collections.first(where: { col in
                   col.photos.contains(where: { $0.id == photo.id })
@@ -241,13 +239,11 @@ struct PhotoDetailView: View {
 
         Task {
             do {
-                try await conn.deletePhotos(contentIDs: [contentID])
+                try await tvManager.deletePhotos(contentIDs: [contentID])
 
-                // Clear the content ID in SyncStore
                 let syncStore = SyncStoreManager.shared.store(for: tv)
                 syncStore.recordDeletion(filename: photo.filename)
 
-                // Clear isOnTV in AppState so the grid dot updates immediately
                 var updated = photo
                 updated.isOnTV = false
                 updated.tvContentID = nil
@@ -264,10 +260,8 @@ struct PhotoDetailView: View {
     }
 
     // MARK: - Update Matte on TV
-    // Pushes the matte change to the TV using change_matte — no re-upload needed.
     private func updateMatteOnTV() {
-        guard let conn = tvManager.connection,
-              conn.state == .connected,
+        guard tvManager.isConnected,
               let contentID = photo.tvContentID
         else { return }
 
@@ -276,7 +270,7 @@ struct PhotoDetailView: View {
 
         Task {
             do {
-                try await conn.changeMatte(contentID: contentID, matte: newMatte)
+                try await tvManager.changeMatte(contentID: contentID, matte: newMatte)
                 saveMessage = "✓ Matte updated on TV"
             } catch {
                 saveMessage = "Failed: \(error.localizedDescription)"
@@ -288,10 +282,8 @@ struct PhotoDetailView: View {
     }
 
     // MARK: - Display on TV
-    // Sets this photo as the currently displayed artwork on the TV.
     private func displayOnTV() {
-        guard let conn = tvManager.connection,
-              conn.state == .connected,
+        guard tvManager.isConnected,
               let contentID = photo.tvContentID
         else { return }
 
@@ -299,7 +291,7 @@ struct PhotoDetailView: View {
 
         Task {
             do {
-                try await conn.selectPhoto(contentID: contentID)
+                try await tvManager.selectPhoto(contentID: contentID)
                 saveMessage = "✓ Now displaying"
             } catch {
                 saveMessage = "Failed: \(error.localizedDescription)"
@@ -454,7 +446,7 @@ struct TVOnlyDetailView: View {
     @State private var statusMessage: String?
 
     var isConnected: Bool {
-        tvManager.connection?.state == .connected
+        tvManager.isConnected
     }
 
     var currentMatte: Matte {
@@ -621,14 +613,13 @@ struct TVOnlyDetailView: View {
     }
 
     private func updateMatteOnTV() {
-        guard let conn = tvManager.connection else { return }
+        guard tvManager.isConnected else { return }
         isUpdatingMatte = true
         let newMatte = currentMatte
 
         Task {
             do {
-                try await conn.changeMatte(contentID: item.id, matte: newMatte)
-                // Update the item in appState
+                try await tvManager.changeMatte(contentID: item.id, matte: newMatte)
                 if let index = appState.tvOnlyItems.firstIndex(where: { $0.id == item.id }) {
                     appState.tvOnlyItems[index].matte = newMatte
                     appState.lastTappedTVOnlyItem = appState.tvOnlyItems[index]
@@ -644,12 +635,12 @@ struct TVOnlyDetailView: View {
     }
 
     private func displayOnTV() {
-        guard let conn = tvManager.connection else { return }
+        guard tvManager.isConnected else { return }
         isDisplaying = true
 
         Task {
             do {
-                try await conn.selectPhoto(contentID: item.id)
+                try await tvManager.selectPhoto(contentID: item.id)
                 statusMessage = "✓ Now displaying"
             } catch {
                 statusMessage = "Failed: \(error.localizedDescription)"
@@ -661,12 +652,12 @@ struct TVOnlyDetailView: View {
     }
 
     private func removeFromTV() {
-        guard let conn = tvManager.connection else { return }
+        guard tvManager.isConnected else { return }
         isDeleting = true
 
         Task {
             do {
-                try await conn.deletePhotos(contentIDs: [item.id])
+                try await tvManager.deletePhotos(contentIDs: [item.id])
                 appState.tvOnlyItems.removeAll { $0.id == item.id }
                 appState.lastTappedTVOnlyItem = nil
                 statusMessage = "✓ Removed"

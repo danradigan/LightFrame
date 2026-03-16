@@ -171,43 +171,34 @@ struct PhotoGridView: View {
     // MARK: - Start Upload: Selected Photos
     private func startUploadSelected() {
         guard let collection = appState.selectedCollection,
-              let conn = tvManager.connection,
-              conn.state == .connected
+              tvManager.isConnected
         else { return }
 
-        // Only upload photos not already on the TV
-        // Photos that ARE on the TV will still appear in the queue —
-        // they'll trigger the duplicate prompt when reached
         let photosToUpload = appState.selectedPhotos
-
         guard !photosToUpload.isEmpty else { return }
 
-        beginUpload(photos: photosToUpload, collection: collection, connection: conn)
+        beginUpload(photos: photosToUpload, collection: collection)
     }
 
     // MARK: - Start Upload: All Photos
     private func startUploadAll() {
         guard let collection = appState.selectedCollection,
-              let conn = tvManager.connection,
-              conn.state == .connected
+              tvManager.isConnected
         else { return }
 
-        // "Upload All" only queues photos not yet on the TV.
-        // Photos already there are excluded entirely — no duplicate prompt.
         let photosToUpload = appState.filteredPhotos.filter { !$0.isOnTV }
-
         guard !photosToUpload.isEmpty else { return }
 
-        beginUpload(photos: photosToUpload, collection: collection, connection: conn)
+        beginUpload(photos: photosToUpload, collection: collection)
     }
 
     // MARK: - Begin Upload Session
-    private func beginUpload(photos: [Photo], collection: Collection, connection: TVConnection) {
+    private func beginUpload(photos: [Photo], collection: Collection) {
         guard let tv = appState.selectedTV else { return }
 
         let syncStore = SyncStoreManager.shared.store(for: tv)
         let engine = UploadEngine(
-            connection: connection,
+            tvManager: tvManager,
             appState: appState,
             syncStore: syncStore
         )
@@ -274,13 +265,12 @@ struct PhotoGridView: View {
 
     @ViewBuilder
     private func tvOnlyContextMenu(for item: TVOnlyItem) -> some View {
-        let isConnected = tvManager.connection?.state == .connected
+        let isConnected = tvManager.isConnected
         let isPartOfSelection = appState.selectedTVOnlyItemIDs.contains(item.id) && appState.selectedTVOnlyItemIDs.count > 1
 
         Button {
             // Display currently tapped item
-            guard let conn = tvManager.connection else { return }
-            Task { try? await conn.selectPhoto(contentID: item.id) }
+            Task { try? await tvManager.selectPhoto(contentID: item.id) }
         } label: {
             Label("Display on TV", systemImage: "tv")
         }
@@ -324,7 +314,7 @@ struct PhotoGridView: View {
     // MARK: - Context Menu
     @ViewBuilder
     private func photoContextMenu(for photo: Photo) -> some View {
-        let isConnected = tvManager.connection?.state == .connected
+        let isConnected = tvManager.isConnected
         let isPartOfSelection = appState.selectedPhotoIDs.contains(photo.id) && appState.selectedPhotoIDs.count > 1
 
         // Send to TV — respects multi-selection
@@ -396,8 +386,7 @@ struct PhotoGridView: View {
 
     // MARK: - Start Delete
     private func startDelete() {
-        guard let conn = tvManager.connection,
-              conn.state == .connected,
+        guard tvManager.isConnected,
               let tv = appState.selectedTV
         else { return }
 
@@ -410,7 +399,7 @@ struct PhotoGridView: View {
 
         let syncStore = SyncStoreManager.shared.store(for: tv)
         let engine = DeleteEngine(
-            connection: conn,
+            tvManager: tvManager,
             appState: appState,
             syncStore: syncStore
         )
@@ -430,14 +419,14 @@ struct PhotoGridView: View {
         let syncStore = SyncStoreManager.shared.store(for: tv)
 
         Task {
-            // Reconnect if the pairing channel died (common after previous scans/uploads)
-            if tvManager.connection?.state != .connected {
+            // Reconnect if needed
+            if !tvManager.isConnected {
                 await tvManager.reconnect()
             }
-            guard let conn = tvManager.connection, conn.hasConnected else { return }
+            guard tvManager.isConnected else { return }
 
             let engine = ScanTVEngine(
-                connection: conn,
+                tvManager: tvManager,
                 appState: appState,
                 syncStore: syncStore,
                 collection: collection
@@ -584,7 +573,7 @@ struct UploadControlsView: View {
     let onScanTV: () -> Void
 
     var isConnected: Bool {
-        tvManager.connection?.state == .connected
+        tvManager.isConnected
     }
 
     var hasSelection: Bool { !appState.selectedPhotoIDs.isEmpty }
@@ -687,12 +676,12 @@ class DeleteEngine: ObservableObject, Identifiable {
         return Double(completedCount + failedCount) / Double(totalCount)
     }
 
-    private let connection: TVConnection
+    private let tvManager: TVConnectionManager
     private let appState: AppState
     private let syncStore: SyncStore
 
-    init(connection: TVConnection, appState: AppState, syncStore: SyncStore) {
-        self.connection = connection
+    init(tvManager: TVConnectionManager, appState: AppState, syncStore: SyncStore) {
+        self.tvManager = tvManager
         self.appState = appState
         self.syncStore = syncStore
     }
@@ -717,7 +706,7 @@ class DeleteEngine: ObservableObject, Identifiable {
             deleteIndex += 1
 
             do {
-                try await connection.deletePhotos(contentIDs: [contentID])
+                try await tvManager.deletePhotos(contentIDs: [contentID])
 
                 syncStore.recordDeletion(filename: photo.filename)
 
@@ -764,7 +753,7 @@ class DeleteEngine: ObservableObject, Identifiable {
             deleteIndex += 1
 
             do {
-                try await connection.deletePhotos(contentIDs: [item.id])
+                try await tvManager.deletePhotos(contentIDs: [item.id])
                 appState.tvOnlyItems.removeAll { $0.id == item.id }
                 appState.save()
                 completedCount += 1
@@ -899,13 +888,13 @@ class ScanTVEngine: ObservableObject, Identifiable {
         return Double(downloadedCount) / Double(unmatchedCount)
     }
 
-    private let connection: TVConnection
+    private let tvManager: TVConnectionManager
     private let appState: AppState
     private let syncStore: SyncStore
     private let collection: Collection
 
-    init(connection: TVConnection, appState: AppState, syncStore: SyncStore, collection: Collection) {
-        self.connection = connection
+    init(tvManager: TVConnectionManager, appState: AppState, syncStore: SyncStore, collection: Collection) {
+        self.tvManager = tvManager
         self.appState = appState
         self.syncStore = syncStore
         self.collection = collection
@@ -915,17 +904,15 @@ class ScanTVEngine: ObservableObject, Identifiable {
         do {
             statusMessage = "Querying TV art library..."
 
-            let tvItems = try await connection.getMyPhotos()
+            let tvItems = try await tvManager.getMyPhotos()
             tvPhotoCount = tvItems.count
             statusMessage = "Found \(tvPhotoCount) photo(s) on TV. Matching..."
 
             // Build lookup structures
-            let tvContentIDs = Set(tvItems.compactMap { $0["content_id"] as? String })
-            var tvItemByID: [String: [String: Any]] = [:]
+            let tvContentIDs = Set(tvItems.map { $0.id })
+            var tvItemByID: [String: TVArtItem] = [:]
             for item in tvItems {
-                if let cid = item["content_id"] as? String {
-                    tvItemByID[cid] = item
-                }
+                tvItemByID[item.id] = item
             }
 
             // Reconcile local photos with TV state
@@ -975,31 +962,28 @@ class ScanTVEngine: ObservableObject, Identifiable {
             if !unmatchedIDs.isEmpty && !isCancelled {
                 statusMessage = "Downloading \(unmatchedIDs.count) thumbnail(s)..."
 
-                // Single batch call — one art channel, one TCP connection for all thumbnails
                 var thumbnailsByID: [String: Data] = [:]
                 do {
-                    thumbnailsByID = try await connection.getThumbnails(contentIDs: unmatchedIDs)
+                    thumbnailsByID = try await tvManager.getThumbnails(contentIDs: unmatchedIDs)
                     downloadedCount = thumbnailsByID.count
                 } catch {
                     print("⚠️ Batch thumbnail download failed: \(error.localizedDescription)")
                 }
 
-                // Build TVOnlyItem array from results
+                // Build TVOnlyItem array from typed TVArtItem results
                 var tvOnlyItems: [TVOnlyItem] = []
                 for contentID in unmatchedIDs {
                     let tvData = tvItemByID[contentID]
-                    let matteStr = tvData?["matte_id"] as? String
+                    let matteStr = tvData?.matteID
                     let matte = matteStr.flatMap { Matte.parse($0) }
-                    let width = (tvData?["width"] as? Int) ?? (tvData?["width"] as? String).flatMap { Int($0) }
-                    let height = (tvData?["height"] as? Int) ?? (tvData?["height"] as? String).flatMap { Int($0) }
 
                     tvOnlyItems.append(TVOnlyItem(
                         id: contentID,
                         matte: matte,
                         isBuiltIn: TVOnlyItem.isBuiltInID(contentID),
                         thumbnailData: thumbnailsByID[contentID],
-                        width: width,
-                        height: height
+                        width: tvData?.width,
+                        height: tvData?.height
                     ))
                 }
 

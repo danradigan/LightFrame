@@ -81,7 +81,7 @@ class UploadEngine: ObservableObject, Identifiable {
     private var duplicateContinuation: CheckedContinuation<DuplicateResolution, Never>?
 
     // MARK: - Dependencies
-    private var connection: TVConnection
+    private var tvManager: TVConnectionManager
     private var appState: AppState
     private var syncStore: SyncStore
 
@@ -89,8 +89,8 @@ class UploadEngine: ObservableObject, Identifiable {
     private var currentUploadTask: Task<Void, Never>?
 
     // MARK: - Init
-    init(connection: TVConnection, appState: AppState, syncStore: SyncStore) {
-        self.connection = connection
+    init(tvManager: TVConnectionManager, appState: AppState, syncStore: SyncStore) {
+        self.tvManager = tvManager
         self.appState = appState
         self.syncStore = syncStore
     }
@@ -256,9 +256,8 @@ class UploadEngine: ObservableObject, Identifiable {
             case .overwrite:
                 // Delete the old version first, then re-upload below
                 if let contentID = photo.tvContentID {
-                    try? await connection.deletePhotos(contentIDs: [contentID])
+                    try? await tvManager.deletePhotos(contentIDs: [contentID])
                     syncStore.recordDeletion(filename: photo.filename)
-                    // Update the in-memory photo so isOnTV becomes false
                     var updated = photo
                     updated.isOnTV = false
                     updated.tvContentID = nil
@@ -279,7 +278,7 @@ class UploadEngine: ObservableObject, Identifiable {
 
         // Upload to TV
         do {
-            let contentID = try await connection.uploadPhoto(
+            let contentID = try await tvManager.uploadPhoto(
                 imageData: imageData,
                 fileType: fileType,
                 matte: photo.matte
