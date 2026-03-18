@@ -227,8 +227,6 @@ struct PhotoDetailView: View {
         matteError = nil
         let previousMatte = photo.matte
         let newMatte = Matte(style: editedStyle, color: editedStyle == .none ? nil : editedColor)
-        let matteChanged = newMatte != previousMatte
-
 
         Task {
             // Step 1: Apply matte — TVConnectionManager handles fallback chain
@@ -538,8 +536,6 @@ struct TVOnlyDetailView: View {
         matteError = nil
         let previousMatte = item.matte
         let newMatte = currentMatte
-        let matteChanged = newMatte != previousMatte
-
 
         Task {
             // Step 1: Apply matte — TVConnectionManager handles fallback chain
@@ -684,4 +680,3 @@ struct PreferencesView: View {
         .padding()
     }
 }
-
