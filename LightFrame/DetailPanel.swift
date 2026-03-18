@@ -1,5 +1,18 @@
 import SwiftUI
 
+// MARK: - Timestamped Matte Logger
+// Produces "[Matte HH:mm:ss.SSS] ..." lines so Dan and Claude can correlate events.
+private let matteTimestampFormatter: DateFormatter = {
+    let f = DateFormatter()
+    f.dateFormat = "HH:mm:ss.SSS"
+    return f
+}()
+
+private func matteLog(_ message: String) {
+    let ts = matteTimestampFormatter.string(from: Date())
+    print("[Matte \(ts)] \(message)")
+}
+
 // MARK: - DetailPanel
 struct DetailPanel: View {
     @EnvironmentObject var appState: AppState
@@ -29,16 +42,16 @@ struct PhotoDetailView: View {
     @State private var editedStyle: MatteStyle = .flexible
     @State private var editedColor: MatteColor = .warm
     @State private var isSaving: Bool = false
-    @State private var isUpdatingMatte: Bool = false
-    @State private var isDisplaying: Bool = false
+    @State private var isApplying: Bool = false
     @State private var saveMessage: String?
+    @State private var matteError: String?
 
     // Upload modal state for the "Send to TV" button
     @State private var uploadEngine: UploadEngine? = nil
 
     var hasChanges: Bool {
-        editedStyle != (photo.matte?.style ?? .flexible) ||
-        editedColor != (photo.matte?.color ?? .warm)
+        editedStyle != (photo.matte?.style ?? AppSettings.defaultMatteStyle) ||
+        editedColor != (photo.matte?.color ?? AppSettings.defaultMatteColor)
     }
 
     var isConnected: Bool {
@@ -77,89 +90,37 @@ struct PhotoDetailView: View {
 
                 Divider()
 
-                // MARK: Matte Style Picker
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Style")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                        .padding(.horizontal, 16)
-
-                    LazyVGrid(
-                        columns: [GridItem(.flexible()), GridItem(.flexible())],
-                        spacing: 8
-                    ) {
-                        ForEach(MatteStyle.allCases, id: \.self) { style in
-                            StyleButton(style: style, isSelected: editedStyle == style) {
-                                editedStyle = style
-                            }
-                        }
-                    }
-                    .padding(.horizontal, 16)
-                }
-
-                // MARK: Matte Color Picker
-                if editedStyle != .none {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("Color")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                            .padding(.horizontal, 16)
-
-                        LazyVGrid(
-                            columns: Array(repeating: GridItem(.flexible()), count: 4),
-                            spacing: 8
-                        ) {
-                            ForEach(MatteColor.allCases, id: \.self) { color in
-                                ColorSwatchButton(color: color, isSelected: editedColor == color) {
-                                    editedColor = color
-                                }
-                            }
-                        }
-                        .padding(.horizontal, 16)
-                    }
-                }
+                // MARK: Matte Picker
+                MattePickerView(selectedStyle: $editedStyle, selectedColor: $editedColor)
 
                 Divider()
 
                 // MARK: Action Buttons
                 VStack(spacing: 8) {
 
-                    // Save Matte — writes the matte choice into the file's EXIF
+                    // Display on TV — updates matte if changed, then displays
+                    if photo.isOnTV {
+                        Button { applyAndDisplay() } label: {
+                            HStack {
+                                if isApplying { ProgressView().scaleEffect(0.7) }
+                                Text(isApplying ? "Applying..." : (hasChanges ? "Update & Display on TV" : "Display on TV"))
+                            }
+                            .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(!isConnected || isApplying)
+                    }
+
+                    // Save Matte — writes the matte choice into the file's EXIF only
                     Button { saveMatte() } label: {
                         HStack {
                             if isSaving { ProgressView().scaleEffect(0.7) }
-                            Text(isSaving ? "Saving..." : "Save Matte")
+                            Text(isSaving ? "Saving..." : "Save Matte to File")
                         }
                         .frame(maxWidth: .infinity)
                     }
-                    .buttonStyle(.borderedProminent)
+                    .buttonStyle(.bordered)
                     .disabled(!hasChanges || isSaving || !photo.isJPEG)
-
-                    // Update Matte on TV — pushes the matte change without re-uploading
-                    if photo.isOnTV && hasChanges {
-                        Button { updateMatteOnTV() } label: {
-                            HStack {
-                                if isUpdatingMatte { ProgressView().scaleEffect(0.7) }
-                                Text(isUpdatingMatte ? "Updating..." : "Update Matte on TV")
-                            }
-                            .frame(maxWidth: .infinity)
-                        }
-                        .buttonStyle(.bordered)
-                        .disabled(!isConnected || isUpdatingMatte)
-                    }
-
-                    // Display on TV — sets this photo as the currently displayed artwork
-                    if photo.isOnTV {
-                        Button { displayOnTV() } label: {
-                            HStack {
-                                if isDisplaying { ProgressView().scaleEffect(0.7) }
-                                Text(isDisplaying ? "Setting..." : "Display on TV")
-                            }
-                            .frame(maxWidth: .infinity)
-                        }
-                        .buttonStyle(.bordered)
-                        .disabled(!isConnected || isDisplaying)
-                    }
 
                     // Send to TV — uploads this single photo via the upload modal
                     Button { sendToTV() } label: {
@@ -189,6 +150,13 @@ struct PhotoDetailView: View {
                             .font(.caption)
                             .foregroundColor(.secondary)
                     }
+
+                    // Matte error banner — shown when the TV rejects a matte change
+                    if let error = matteError {
+                        MatteErrorBanner(message: error) {
+                            matteError = nil
+                        }
+                    }
                 }
                 .padding(.horizontal, 16)
                 .padding(.bottom, 20)
@@ -206,6 +174,7 @@ struct PhotoDetailView: View {
 
     // MARK: - Send to TV
     private func sendToTV() {
+        matteLog("🔘 BUTTON: sendToTV clicked — photo=\(photo.filename), matte=\(photo.matte?.apiToken ?? "nil")")
         guard let collection = appState.collections.first(where: { col in
             col.photos.contains(where: { $0.id == photo.id })
         }),
@@ -229,6 +198,7 @@ struct PhotoDetailView: View {
     // MARK: - Remove from TV
     // Deletes the photo from the TV and clears its content ID in AppState and SyncStore.
     private func removeFromTV() {
+        matteLog("🔘 BUTTON: removeFromTV clicked — photo=\(photo.filename), contentID=\(photo.tvContentID ?? "nil")")
         guard tvManager.isConnected,
               let contentID = photo.tvContentID,
               let collection = appState.collections.first(where: { col in
@@ -259,44 +229,122 @@ struct PhotoDetailView: View {
         }
     }
 
-    // MARK: - Update Matte on TV
-    private func updateMatteOnTV() {
+    // MARK: - Apply & Display on TV
+    // Compares the picker state against what the TV last confirmed.
+    // Sends change_matte only when needed, then select_image to display.
+    // EXIF and model are updated only after the TV confirms the change.
+    private func applyAndDisplay() {
         guard tvManager.isConnected,
               let contentID = photo.tvContentID
         else { return }
 
-        isUpdatingMatte = true
+        isApplying = true
+        matteError = nil
+        let previousMatte = photo.matte
         let newMatte = Matte(style: editedStyle, color: editedStyle == .none ? nil : editedColor)
+        let matteChanged = newMatte != previousMatte
+
+        matteLog("🔘 BUTTON: applyAndDisplay clicked")
+        matteLog("  photo: \(photo.filename), contentID=\(contentID), dims=\(photo.width ?? 0)×\(photo.height ?? 0)")
+        matteLog("  TV state: connected=\(tvManager.isConnected), tv=\(appState.selectedTV?.name ?? "nil") @ \(appState.selectedTV?.ipAddress ?? "nil")")
+        matteLog("  current matte (model): \(previousMatte?.apiToken ?? "nil")")
+        matteLog("  picker state: style=\(editedStyle.rawValue), color=\(editedColor.rawValue)")
+        matteLog("  new matte (to send): \(newMatte.apiToken), matteChanged=\(matteChanged)")
 
         Task {
-            do {
-                try await tvManager.changeMatte(contentID: contentID, matte: newMatte)
-                saveMessage = "✓ Matte updated on TV"
-            } catch {
-                saveMessage = "Failed: \(error.localizedDescription)"
+            // Step 1: Always send change_matte to ensure TV matches our intended matte.
+            // The TV's own matte state may differ from our EXIF (changed via remote, etc.)
+            if newMatte.style != .none {
+                do {
+                    matteLog("Sending change_matte: contentID=\(contentID), matteID=\(newMatte.apiToken)")
+                    try await tvManager.changeMatte(contentID: contentID, matte: newMatte)
+                    matteLog("change_matte succeeded — waiting for TV to render")
+                    // Give the TV time to finish rendering the new matte before select_image
+                    try? await Task.sleep(nanoseconds: 1_000_000_000)
+                } catch {
+                    matteLog("change_matte FAILED: \(error.localizedDescription)")
+                    // Revert UI to the previously confirmed matte
+                    editedStyle = previousMatte?.style ?? AppSettings.defaultMatteStyle
+                    editedColor = previousMatte?.color ?? AppSettings.defaultMatteColor
+                    matteError = "Matte could not be applied — your TV didn't accept this style for this image"
+                    isApplying = false
+
+                    // Auto-dismiss error after 5 seconds
+                    try? await Task.sleep(nanoseconds: 5_000_000_000)
+                    matteError = nil
+                    return
+                }
+            } else {
+                // For "none", also send change_matte (no portrait_matte_id)
+                do {
+                    matteLog("Sending change_matte: contentID=\(contentID), matteID=none")
+                    try await tvManager.changeMatte(contentID: contentID, matte: newMatte)
+                    matteLog("change_matte to none succeeded")
+                    try? await Task.sleep(nanoseconds: 1_000_000_000)
+                } catch {
+                    matteLog("change_matte to none FAILED: \(error.localizedDescription)")
+                    // Revert UI to the previously confirmed matte
+                    editedStyle = previousMatte?.style ?? AppSettings.defaultMatteStyle
+                    editedColor = previousMatte?.color ?? AppSettings.defaultMatteColor
+                    matteError = "Matte could not be applied — your TV didn't accept this style for this image"
+                    isApplying = false
+
+                    // Auto-dismiss error after 5 seconds
+                    try? await Task.sleep(nanoseconds: 5_000_000_000)
+                    matteError = nil
+                    return
+                }
             }
-            isUpdatingMatte = false
-            try? await Task.sleep(nanoseconds: 2_000_000_000)
-            saveMessage = nil
-        }
-    }
 
-    // MARK: - Display on TV
-    private func displayOnTV() {
-        guard tvManager.isConnected,
-              let contentID = photo.tvContentID
-        else { return }
+            // Step 2: Save confirmed matte to EXIF and update model (only if changed)
+            if matteChanged {
+                if photo.isJPEG {
+                    matteLog("Writing EXIF matte: \(newMatte.apiToken)")
+                    let photoURL = photo.url
+                    let currentPhoto = photo
+                    await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                        DispatchQueue.global(qos: .userInitiated).async {
+                            guard let collection = DispatchQueue.main.sync(execute: {
+                                appState.collections.first { col in
+                                    col.photos.contains { $0.id == currentPhoto.id }
+                                }
+                            }) else {
+                                continuation.resume()
+                                return
+                            }
 
-        isDisplaying = true
+                            var resolved = collection.folderURL
+                            if let bookmarkData = collection.bookmarkData {
+                                var isStale = false
+                                if let url = try? URL(
+                                    resolvingBookmarkData: bookmarkData,
+                                    options: .withSecurityScope,
+                                    relativeTo: nil,
+                                    bookmarkDataIsStale: &isStale
+                                ) { resolved = url }
+                            }
+                            let accessGranted = resolved.startAccessingSecurityScopedResource()
+                            defer { if accessGranted { resolved.stopAccessingSecurityScopedResource() } }
+                            EXIFManager.writeMatte(newMatte, to: photoURL)
+                            continuation.resume()
+                        }
+                    }
+                }
+                appState.updateMatte(newMatte, for: photo, newData: nil)
+                matteLog("In-memory model updated to: \(newMatte.apiToken)")
+            }
 
-        Task {
+            // Step 3: Display on TV
             do {
+                matteLog("Sending select_image: contentID=\(contentID)")
                 try await tvManager.selectPhoto(contentID: contentID)
                 saveMessage = "✓ Now displaying"
+                matteLog("select_image succeeded")
             } catch {
                 saveMessage = "Failed: \(error.localizedDescription)"
+                matteLog("select_image FAILED: \(error.localizedDescription)")
             }
-            isDisplaying = false
+            isApplying = false
             try? await Task.sleep(nanoseconds: 2_000_000_000)
             saveMessage = nil
         }
@@ -310,14 +358,19 @@ struct PhotoDetailView: View {
     }
 
     private func loadCurrentMatte() {
-        editedStyle = photo.matte?.style ?? AppSettings.defaultMatteStyle
-        editedColor = photo.matte?.color ?? AppSettings.defaultMatteColor
+        let style = photo.matte?.style ?? AppSettings.defaultMatteStyle
+        let color = photo.matte?.color ?? AppSettings.defaultMatteColor
+        matteLog("📋 loadCurrentMatte: photo=\(photo.filename), contentID=\(photo.tvContentID ?? "nil"), isOnTV=\(photo.isOnTV)")
+        matteLog("  photo.matte=\(photo.matte?.apiToken ?? "nil") → editedStyle=\(style.rawValue), editedColor=\(color.rawValue)")
+        editedStyle = style
+        editedColor = color
         saveMessage = nil
     }
 
-    // MARK: - Save Matte (unchanged)
+    // MARK: - Save Matte
     private func saveMatte() {
         guard photo.isJPEG else { return }
+        matteLog("🔘 BUTTON: saveMatte clicked — style=\(editedStyle.rawValue), color=\(editedColor.rawValue), photo=\(photo.filename)")
         isSaving = true
         let newMatte = Matte(style: editedStyle, color: editedStyle == .none ? nil : editedColor)
         let photoURL = photo.url
@@ -379,56 +432,6 @@ struct PhotoDetailView: View {
     }
 }
 
-// MARK: - Style Button
-struct StyleButton: View {
-    let style: MatteStyle
-    let isSelected: Bool
-    let onTap: () -> Void
-
-    var body: some View {
-        Text(style.displayName)
-            .font(.caption)
-            .padding(.vertical, 6)
-            .frame(maxWidth: .infinity)
-            .background(isSelected ? Color.accentColor.opacity(0.2) : Color(NSColor.controlBackgroundColor))
-            .foregroundColor(isSelected ? .accentColor : .primary)
-            .cornerRadius(6)
-            .overlay(
-                RoundedRectangle(cornerRadius: 6)
-                    .stroke(isSelected ? Color.accentColor : Color.clear, lineWidth: 1)
-            )
-            .onTapGesture { onTap() }
-    }
-}
-
-// MARK: - Color Swatch Button
-struct ColorSwatchButton: View {
-    let color: MatteColor
-    let isSelected: Bool
-    let onTap: () -> Void
-
-    var body: some View {
-        VStack(spacing: 3) {
-            Circle()
-                .fill(color.previewColor)
-                .frame(width: 28, height: 28)
-                .overlay(
-                    Circle()
-                        .stroke(
-                            isSelected ? Color.accentColor : Color.primary.opacity(0.2),
-                            lineWidth: isSelected ? 2 : 0.5
-                        )
-                )
-                .shadow(color: .black.opacity(0.1), radius: 1, x: 0, y: 1)
-            Text(color.displayName)
-                .font(.system(size: 8))
-                .foregroundColor(.secondary)
-                .lineLimit(1)
-        }
-        .onTapGesture { onTap() }
-    }
-}
-
 // MARK: - TV-Only Detail View
 // Shows details for a photo that exists only on the TV (no local file).
 // Supports Display on TV, Change Matte, and Remove from TV.
@@ -440,10 +443,10 @@ struct TVOnlyDetailView: View {
 
     @State private var editedStyle: MatteStyle = .flexible
     @State private var editedColor: MatteColor = .warm
-    @State private var isUpdatingMatte: Bool = false
-    @State private var isDisplaying: Bool = false
+    @State private var isApplying: Bool = false
     @State private var isDeleting: Bool = false
     @State private var statusMessage: String?
+    @State private var matteError: String?
 
     var isConnected: Bool {
         tvManager.isConnected
@@ -454,8 +457,8 @@ struct TVOnlyDetailView: View {
     }
 
     var hasMatteChanges: Bool {
-        editedStyle != (item.matte?.style ?? .flexible) ||
-        editedColor != (item.matte?.color ?? .warm)
+        editedStyle != (item.matte?.style ?? AppSettings.defaultMatteStyle) ||
+        editedColor != (item.matte?.color ?? AppSettings.defaultMatteColor)
     }
 
     var body: some View {
@@ -511,75 +514,23 @@ struct TVOnlyDetailView: View {
 
                 Divider()
 
-                // MARK: Matte Style Picker
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Style")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                        .padding(.horizontal, 16)
-
-                    LazyVGrid(
-                        columns: [GridItem(.flexible()), GridItem(.flexible())],
-                        spacing: 8
-                    ) {
-                        ForEach(MatteStyle.allCases, id: \.self) { style in
-                            StyleButton(style: style, isSelected: editedStyle == style) {
-                                editedStyle = style
-                            }
-                        }
-                    }
-                    .padding(.horizontal, 16)
-                }
-
-                // MARK: Matte Color Picker
-                if editedStyle != .none {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("Color")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                            .padding(.horizontal, 16)
-
-                        LazyVGrid(
-                            columns: Array(repeating: GridItem(.flexible()), count: 4),
-                            spacing: 8
-                        ) {
-                            ForEach(MatteColor.allCases, id: \.self) { color in
-                                ColorSwatchButton(color: color, isSelected: editedColor == color) {
-                                    editedColor = color
-                                }
-                            }
-                        }
-                        .padding(.horizontal, 16)
-                    }
-                }
+                // MARK: Matte Picker
+                MattePickerView(selectedStyle: $editedStyle, selectedColor: $editedColor)
 
                 Divider()
 
                 // MARK: Actions
                 VStack(spacing: 8) {
-                    // Update matte on TV
-                    if hasMatteChanges {
-                        Button { updateMatteOnTV() } label: {
-                            HStack {
-                                if isUpdatingMatte { ProgressView().scaleEffect(0.7) }
-                                Text(isUpdatingMatte ? "Updating..." : "Update Matte on TV")
-                            }
-                            .frame(maxWidth: .infinity)
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .disabled(!isConnected || isUpdatingMatte)
-                    }
-
-                    // Display on TV
-                    Button { displayOnTV() } label: {
+                    // Display on TV — updates matte if changed, then displays
+                    Button { applyAndDisplay() } label: {
                         HStack {
-                            if isDisplaying { ProgressView().scaleEffect(0.7) }
-                            Text(isDisplaying ? "Setting..." : "Display on TV")
+                            if isApplying { ProgressView().scaleEffect(0.7) }
+                            Text(isApplying ? "Applying..." : (hasMatteChanges ? "Update & Display on TV" : "Display on TV"))
                         }
                         .frame(maxWidth: .infinity)
                     }
-                    .buttonStyle(.bordered)
-                    .disabled(!isConnected || isDisplaying)
+                    .buttonStyle(.borderedProminent)
+                    .disabled(!isConnected || isApplying)
 
                     // Remove from TV
                     Button(role: .destructive) { removeFromTV() } label: {
@@ -597,6 +548,13 @@ struct TVOnlyDetailView: View {
                             .font(.caption)
                             .foregroundColor(msg.contains("✓") ? .green : .red)
                     }
+
+                    // Matte error banner — shown when the TV rejects a matte change
+                    if let error = matteError {
+                        MatteErrorBanner(message: error) {
+                            matteError = nil
+                        }
+                    }
                 }
                 .padding(.horizontal, 16)
                 .padding(.bottom, 20)
@@ -607,51 +565,100 @@ struct TVOnlyDetailView: View {
     }
 
     private func loadMatte() {
-        editedStyle = item.matte?.style ?? .flexible
-        editedColor = item.matte?.color ?? .warm
+        editedStyle = item.matte?.style ?? AppSettings.defaultMatteStyle
+        editedColor = item.matte?.color ?? AppSettings.defaultMatteColor
+        matteLog("📋 TVOnly loadMatte: item=\(item.id), dims=\(item.width ?? 0)×\(item.height ?? 0), builtIn=\(item.isBuiltIn)")
+        matteLog("  item.matte=\(item.matte?.apiToken ?? "nil") → editedStyle=\(editedStyle.rawValue), editedColor=\(editedColor.rawValue)")
         statusMessage = nil
+        matteError = nil
     }
 
-    private func updateMatteOnTV() {
+    // Apply matte changes (if any) then display on TV.
+    // On matte failure, reverts the UI and shows an error banner.
+    private func applyAndDisplay() {
         guard tvManager.isConnected else { return }
-        isUpdatingMatte = true
+        isApplying = true
+        matteError = nil
+        let previousMatte = item.matte
         let newMatte = currentMatte
+        let matteChanged = newMatte != previousMatte
+
+        matteLog("🔘 BUTTON: TVOnly applyAndDisplay clicked")
+        matteLog("  item: \(item.id), dims=\(item.width ?? 0)×\(item.height ?? 0), builtIn=\(item.isBuiltIn)")
+        matteLog("  TV state: connected=\(tvManager.isConnected), tv=\(appState.selectedTV?.name ?? "nil") @ \(appState.selectedTV?.ipAddress ?? "nil")")
+        matteLog("  current matte (model): \(previousMatte?.apiToken ?? "nil")")
+        matteLog("  picker state: style=\(editedStyle.rawValue), color=\(editedColor.rawValue)")
+        matteLog("  new matte (to send): \(newMatte.apiToken), matteChanged=\(matteChanged)")
 
         Task {
-            do {
-                try await tvManager.changeMatte(contentID: item.id, matte: newMatte)
+            // Step 1: Always send change_matte to ensure TV matches our intended matte.
+            if newMatte.style != .none {
+                do {
+                    matteLog("TVOnly Sending change_matte: contentID=\(item.id), matteID=\(newMatte.apiToken)")
+                    try await tvManager.changeMatte(contentID: item.id, matte: newMatte)
+                    matteLog("TVOnly change_matte succeeded — waiting for TV to render")
+                    try? await Task.sleep(nanoseconds: 1_000_000_000)
+                } catch {
+                    matteLog("TVOnly change_matte FAILED: \(error.localizedDescription)")
+                    // Revert UI to the previously confirmed matte
+                    editedStyle = previousMatte?.style ?? AppSettings.defaultMatteStyle
+                    editedColor = previousMatte?.color ?? AppSettings.defaultMatteColor
+                    matteError = "Matte could not be applied — your TV didn't accept this style for this image"
+                    isApplying = false
+
+                    // Auto-dismiss error after 5 seconds
+                    try? await Task.sleep(nanoseconds: 5_000_000_000)
+                    matteError = nil
+                    return
+                }
+            } else {
+                do {
+                    matteLog("TVOnly Sending change_matte: contentID=\(item.id), matteID=none")
+                    try await tvManager.changeMatte(contentID: item.id, matte: newMatte)
+                    matteLog("TVOnly change_matte to none succeeded")
+                    try? await Task.sleep(nanoseconds: 1_000_000_000)
+                } catch {
+                    matteLog("TVOnly change_matte to none FAILED: \(error.localizedDescription)")
+                    // Revert UI to the previously confirmed matte
+                    editedStyle = previousMatte?.style ?? AppSettings.defaultMatteStyle
+                    editedColor = previousMatte?.color ?? AppSettings.defaultMatteColor
+                    matteError = "Matte could not be applied — your TV didn't accept this style for this image"
+                    isApplying = false
+
+                    // Auto-dismiss error after 5 seconds
+                    try? await Task.sleep(nanoseconds: 5_000_000_000)
+                    matteError = nil
+                    return
+                }
+            }
+
+            // Step 2: Update in-memory model (only if changed)
+            if matteChanged {
                 if let index = appState.tvOnlyItems.firstIndex(where: { $0.id == item.id }) {
                     appState.tvOnlyItems[index].matte = newMatte
                     appState.lastTappedTVOnlyItem = appState.tvOnlyItems[index]
                 }
-                statusMessage = "✓ Matte updated"
-            } catch {
-                statusMessage = "Failed: \(error.localizedDescription)"
+                matteLog("TVOnly In-memory model updated to: \(newMatte.apiToken)")
             }
-            isUpdatingMatte = false
-            try? await Task.sleep(nanoseconds: 2_000_000_000)
-            statusMessage = nil
-        }
-    }
 
-    private func displayOnTV() {
-        guard tvManager.isConnected else { return }
-        isDisplaying = true
-
-        Task {
+            // Step 3: Display on TV
             do {
+                matteLog("TVOnly Sending select_image: contentID=\(item.id)")
                 try await tvManager.selectPhoto(contentID: item.id)
                 statusMessage = "✓ Now displaying"
+                matteLog("TVOnly select_image succeeded")
             } catch {
                 statusMessage = "Failed: \(error.localizedDescription)"
+                matteLog("TVOnly select_image FAILED: \(error.localizedDescription)")
             }
-            isDisplaying = false
+            isApplying = false
             try? await Task.sleep(nanoseconds: 2_000_000_000)
             statusMessage = nil
         }
     }
 
     private func removeFromTV() {
+        matteLog("🔘 BUTTON: TVOnly removeFromTV clicked — item=\(item.id)")
         guard tvManager.isConnected else { return }
         isDeleting = true
 

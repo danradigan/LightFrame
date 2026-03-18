@@ -158,10 +158,34 @@ class SamsungArtService: ObservableObject {
     //
     // Python: change_matte(content_id, matte_id, portrait_matte)
     //
+    // IMPORTANT: Samsung's change_matte command only writes to portrait_matte_id.
+    // To change the landscape matte_id, we must send two separate calls.
+    //
     func changeMatte(contentID: String, matteID: String, portraitMatteID: String? = nil) async throws {
         let conn = try requireConnection()
         let params = SamsungArtProtocol.changeMatte(contentID: contentID, matteID: matteID, portraitMatteID: portraitMatteID)
-        _ = try await conn.sendCommand(params)
+        logHandler?("[Matte] changeMatte: contentID=\(contentID), matteID=\(matteID), portraitMatteID=\(portraitMatteID ?? "nil")")
+        let inner = try await conn.sendCommand(params, timeout: 15)
+        // Log full response for debugging matte issues
+        let rawDump = inner.raw.map { "\($0.key)=\($0.value)" }.sorted().joined(separator: ", ")
+        logHandler?("[Matte] changeMatte response: event=\(inner.event), isError=\(inner.isError), raw={\(rawDump)}")
+    }
+
+    // Send change_matte with a raw param dictionary — for debugging/testing new field combos.
+    func changeMatteRaw(contentID: String, extraParams: [String: String]) async throws {
+        let conn = try requireConnection()
+        var params: [String: Any] = [
+            "request": "change_matte",
+            "content_id": contentID
+        ]
+        for (key, value) in extraParams {
+            params[key] = value
+        }
+        let paramDesc = extraParams.map { "\($0.key)=\($0.value)" }.sorted().joined(separator: ", ")
+        logHandler?("[Matte] changeMatteRaw: contentID=\(contentID), params={\(paramDesc)}")
+        let inner = try await conn.sendCommand(params, timeout: 15)
+        let rawDump = inner.raw.map { "\($0.key)=\($0.value)" }.sorted().joined(separator: ", ")
+        logHandler?("[Matte] changeMatteRaw response: event=\(inner.event), isError=\(inner.isError), raw={\(rawDump)}")
     }
 
     // MARK: - Slideshow
