@@ -12,9 +12,6 @@ enum MatteStyle: String, CaseIterable, Codable {
     case flexible   = "flexible"
     case shadowbox  = "shadowbox"
     case panoramic  = "panoramic"
-    case triptych   = "triptych"
-    case mix        = "mix"
-    case squares    = "squares"
 
     var displayName: String {
         switch self {
@@ -25,9 +22,6 @@ enum MatteStyle: String, CaseIterable, Codable {
         case .flexible:   return "Flexible"
         case .shadowbox:  return "Shadow Box"
         case .panoramic:  return "Panoramic"
-        case .triptych:   return "Triptych"
-        case .mix:        return "Mix"
-        case .squares:    return "Squares"
         }
     }
 }
@@ -121,6 +115,22 @@ struct Matte: Codable, Equatable, Hashable {
         let color = parts.count > 1 ? MatteColor(rawValue: parts[1]) : nil
         return Matte(style: style, color: color)
     }
+
+    // MARK: - Matte Fallbacks
+    // When the TV rejects a matte, we fall back in two stages:
+    //   1. Keep the user's color but switch to shadowbox (most universally accepted style)
+    //   2. If that also fails, go to shadowbox + polar (known-safe baseline)
+    //
+    // The "bad metadata" fallback (polar + shadowbox) is used when the matte
+    // couldn't even be parsed or the color is unknown.
+
+    /// Fallback preserving the user's selected color — shadowbox is the safest style.
+    static func fallbackPreservingColor(_ color: MatteColor?) -> Matte {
+        Matte(style: .shadowbox, color: color ?? .polar)
+    }
+
+    /// Last-resort fallback when metadata is completely bad — known-safe combo.
+    static let safeFallback = Matte(style: .shadowbox, color: .polar)
 }
 
 // MARK: - Photo

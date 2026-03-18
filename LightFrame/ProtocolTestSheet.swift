@@ -95,7 +95,7 @@ struct ProtocolTestSheet: View {
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
                     }
-                    .onChange(of: runner.logLines.count) { _ in
+                    .onChange(of: runner.logLines.count) {
                         if let last = runner.logLines.indices.last {
                             proxy.scrollTo(last, anchor: .bottom)
                         }

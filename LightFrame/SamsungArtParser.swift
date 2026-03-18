@@ -47,17 +47,17 @@ enum SamsungArtParser {
     //
     // Python: helper.process_api_response(data) → json.loads(response)
     //
-    struct OuterMessage {
+    struct OuterMessage: @unchecked Sendable {
         let event: String
-        let raw: [String: Any]
+        nonisolated(unsafe) let raw: [String: Any]
 
         // The full data dict (for ms.channel.connect which has data.token)
-        var data: [String: Any]? {
+        nonisolated var data: [String: Any]? {
             raw["data"] as? [String: Any]
         }
     }
 
-    static func parseOuter(_ text: String) -> OuterMessage? {
+    nonisolated static func parseOuter(_ text: String) -> OuterMessage? {
         guard let data = text.data(using: .utf8),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let event = json["event"] as? String
@@ -70,19 +70,19 @@ enum SamsungArtParser {
     // Python: json.loads(response["data"])
     // The "data" field is a JSON string, not a dict.
     //
-    struct InnerMessage {
+    struct InnerMessage: @unchecked Sendable {
         let event: String          // sub-event e.g. "get_content_list", "image_added", "error"
         let requestID: String?     // request_id or id — used for correlation
-        let raw: [String: Any]     // full inner dict for field access
+        nonisolated(unsafe) let raw: [String: Any]     // full inner dict for field access
 
-        var isError: Bool { event == "error" }
+        nonisolated var isError: Bool { event == "error" }
 
-        var errorCode: String? {
+        nonisolated var errorCode: String? {
             raw["error_code"] as? String
         }
 
         // Python: json.loads(data['request_data'])['request']
-        var errorRequestName: String? {
+        nonisolated var errorRequestName: String? {
             guard let reqDataStr = raw["request_data"] as? String,
                   let reqData = reqDataStr.data(using: .utf8),
                   let reqJSON = try? JSONSerialization.jsonObject(with: reqData) as? [String: Any]
@@ -91,7 +91,7 @@ enum SamsungArtParser {
         }
     }
 
-    static func parseInner(from outer: OuterMessage) -> InnerMessage? {
+    nonisolated static func parseInner(from outer: OuterMessage) -> InnerMessage? {
         guard outer.event == "d2d_service_message",
               let dataStr = outer.raw["data"] as? String,
               let dataBytes = dataStr.data(using: .utf8),
@@ -106,7 +106,7 @@ enum SamsungArtParser {
     }
 
     // Convenience: parse both layers from raw WebSocket text
-    static func parseD2DMessage(_ text: String) -> InnerMessage? {
+    nonisolated static func parseD2DMessage(_ text: String) -> InnerMessage? {
         guard let outer = parseOuter(text) else { return nil }
         return parseInner(from: outer)
     }
@@ -117,7 +117,7 @@ enum SamsungArtParser {
     //
 
     // Python: json.loads(data["content_list"])
-    static func parseContentList(from inner: InnerMessage) -> [[String: Any]]? {
+    nonisolated static func parseContentList(from inner: InnerMessage) -> [[String: Any]]? {
         guard let raw = inner.raw["content_list"] else { return nil }
 
         // Could be a JSON string (common) or already an array (defensive)
@@ -133,7 +133,7 @@ enum SamsungArtParser {
     }
 
     // Python: json.loads(data["conn_info"])
-    static func parseConnInfo(from inner: InnerMessage) -> ConnInfo? {
+    nonisolated static func parseConnInfo(from inner: InnerMessage) -> ConnInfo? {
         guard let raw = inner.raw["conn_info"] else { return nil }
 
         let dict: [String: Any]?
@@ -169,7 +169,7 @@ enum SamsungArtParser {
     //
     // Python: _check_for_token(response) → response.get("data", {}).get("token")
     //
-    static func extractToken(from outer: OuterMessage) -> String? {
+    nonisolated static func extractToken(from outer: OuterMessage) -> String? {
         outer.data?["token"] as? String
     }
 
@@ -177,15 +177,15 @@ enum SamsungArtParser {
     //
     // Python: event.py constants
     //
-    static let d2dServiceMessage = "d2d_service_message"
-    static let channelConnect = "ms.channel.connect"
-    static let channelReady = "ms.channel.ready"
-    static let channelUnauthorized = "ms.channel.unauthorized"
-    static let channelTimeout = "ms.channel.timeOut"
-    static let errorEvent = "ms.error"
+    nonisolated static let d2dServiceMessage = "d2d_service_message"
+    nonisolated static let channelConnect = "ms.channel.connect"
+    nonisolated static let channelReady = "ms.channel.ready"
+    nonisolated static let channelUnauthorized = "ms.channel.unauthorized"
+    nonisolated static let channelTimeout = "ms.channel.timeOut"
+    nonisolated static let errorEvent = "ms.error"
 
     // Python: IGNORE_EVENTS_AT_STARTUP
-    static let ignoreEventsAtStartup: Set<String> = [
+    nonisolated static let ignoreEventsAtStartup: Set<String> = [
         "ed.edenTV.update",
         "ms.voiceApp.hide"
     ]
