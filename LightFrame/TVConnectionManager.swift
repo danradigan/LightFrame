@@ -2,6 +2,19 @@ import Foundation
 import SwiftUI
 import Combine
 
+// MARK: - MatteError
+// Thrown when all matte fallback attempts fail.
+enum MatteError: LocalizedError {
+    case allFallbacksFailed(requested: String)
+
+    var errorDescription: String? {
+        switch self {
+        case .allFallbacksFailed(let requested):
+            return "Matte '\(requested)' and all fallbacks were rejected by the TV"
+        }
+    }
+}
+
 // MARK: - TVConnectionManager
 //
 // Manages the active connection to the selected TV.
@@ -179,23 +192,70 @@ class TVConnectionManager: ObservableObject {
         try await artService.selectImage(contentID: contentID)
     }
 
-    func changeMatte(contentID: String, matte: Matte) async throws {
+    // MARK: - Change Matte (with fallback)
+    // Tries the requested matte, then falls back through safer options.
+    // Returns the matte that the TV actually accepted.
+    //
+    // Fallback chain:
+    //   1. Requested matte
+    //   2. Shadowbox + same color (style was bad, color is fine)
+    //   3. Shadowbox + polar (known-safe baseline)
+    //
+    // Throws only if ALL attempts fail (including "none", which has no fallback).
+    @discardableResult
+    func changeMatte(contentID: String, matte: Matte) async throws -> Matte {
+        // Try the requested matte first
+        do {
+            try await sendChangeMatte(contentID: contentID, matte: matte)
+            return matte
+        } catch {
+            artService.logHandler?("[Matte] Rejected \(matte.apiToken): \(error.localizedDescription)")
+        }
+
+        // "none" has no fallback — if the TV rejects it, something else is wrong
+        guard matte.style != .none else {
+            try await sendChangeMatte(contentID: contentID, matte: matte) // rethrow
+            return matte // unreachable, but satisfies compiler
+        }
+
+        // Fallback 1: shadowbox + same color
+        let fallback1 = Matte.fallbackPreservingColor(matte.color)
+        if fallback1 != matte {
+            do {
+                try await sendChangeMatte(contentID: contentID, matte: fallback1)
+                artService.logHandler?("[Matte] Fell back to \(fallback1.apiToken)")
+                return fallback1
+            } catch {
+                artService.logHandler?("[Matte] Fallback 1 rejected \(fallback1.apiToken): \(error.localizedDescription)")
+            }
+        }
+
+        // Fallback 2: shadowbox + polar (known-safe)
+        let fallback2 = Matte.safeFallback
+        if fallback2 != fallback1 {
+            do {
+                try await sendChangeMatte(contentID: contentID, matte: fallback2)
+                artService.logHandler?("[Matte] Fell back to \(fallback2.apiToken)")
+                return fallback2
+            } catch {
+                artService.logHandler?("[Matte] Fallback 2 rejected \(fallback2.apiToken): \(error.localizedDescription)")
+            }
+        }
+
+        // Everything failed — throw the original error context
+        throw MatteError.allFallbacksFailed(requested: matte.apiToken)
+    }
+
+    // Low-level matte send — no fallback, just the two-slot protocol dance.
+    private func sendChangeMatte(contentID: String, matte: Matte) async throws {
         let matteToken = matte.apiToken
         if matte.style != .none {
-            // Send two separate change_matte calls to set both slots.
-            // The TV has independent matte_id (landscape) and portrait_matte_id (portrait) slots.
-            // A single change_matte only writes portrait_matte_id; sending matte_id alone
-            // writes to the landscape slot.
-            //
             // Call 1: matte_id (landscape slot) — must succeed
             try await artService.changeMatteRaw(
                 contentID: contentID,
                 extraParams: ["matte_id": matteToken]
             )
             // Call 2: portrait_matte_id (portrait slot) — best effort
-            // Some styles (modern, modernthin, modernwide) error -7 on portrait_matte_id
-            // for certain resolutions. This is a TV firmware limitation, not a real failure.
-            // The image will render correctly from matte_id for landscape images.
             do {
                 try await artService.changeMatteRaw(
                     contentID: contentID,
@@ -205,7 +265,6 @@ class TVConnectionManager: ObservableObject {
                 artService.logHandler?("[Matte] portrait_matte_id failed (non-fatal): \(error.localizedDescription)")
             }
         } else {
-            // For "none", send matte_id only
             try await artService.changeMatteRaw(
                 contentID: contentID,
                 extraParams: ["matte_id": matteToken]
@@ -225,15 +284,52 @@ class TVConnectionManager: ObservableObject {
         try await artService.fetchThumbnails(contentIDs: contentIDs)
     }
 
-    func uploadPhoto(imageData: Data, fileType: String, matte: Matte?) async throws -> String {
-        let matteToken = matte?.apiToken ?? "flexible_warm"
-        let portraitToken = matte?.apiToken ?? "flexible_warm"
-        return try await artService.uploadArt(
-            imageData: imageData,
-            fileType: fileType,
-            matteID: matteToken,
-            portraitMatteID: portraitToken
-        )
+    // MARK: - Upload Photo (with matte fallback)
+    // If upload fails and a non-none matte is set, retries with fallback mattes.
+    // Returns (contentID, confirmedMatte) so callers can update their model.
+    func uploadPhoto(imageData: Data, fileType: String, matte: Matte?) async throws -> (contentID: String, confirmedMatte: Matte?) {
+        let originalMatte = matte
+
+        // Attempt 1: upload with the requested matte
+        do {
+            let matteToken = originalMatte?.apiToken ?? "flexible_warm"
+            let contentID = try await artService.uploadArt(
+                imageData: imageData,
+                fileType: fileType,
+                matteID: matteToken,
+                portraitMatteID: matteToken
+            )
+            return (contentID, originalMatte)
+        } catch {
+            // If no matte or matte is "none", no fallback to try
+            guard let original = originalMatte, original.style != .none else {
+                throw error
+            }
+
+            // Try fallback mattes
+            let fallbacks = [
+                Matte.fallbackPreservingColor(original.color),
+                Matte.safeFallback
+            ]
+
+            for fallback in fallbacks {
+                do {
+                    artService.logHandler?("[Upload] Retrying with \(fallback.apiToken) after \(original.apiToken) failed")
+                    let contentID = try await artService.uploadArt(
+                        imageData: imageData,
+                        fileType: fileType,
+                        matteID: fallback.apiToken,
+                        portraitMatteID: fallback.apiToken
+                    )
+                    return (contentID, fallback)
+                } catch {
+                    continue
+                }
+            }
+
+            // All fallbacks failed — throw the original error
+            throw error
+        }
     }
 
     func getCurrentArtwork() async throws -> String? {
