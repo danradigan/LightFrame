@@ -2,7 +2,7 @@ import SwiftUI
 
 // MARK: - MattePickerView
 // Shared matte style + color picker used in both PhotoDetailView and TVOnlyDetailView.
-// Style selector is a compact wrapped row of pill buttons.
+// Style selector shows visual tiles that preview the matte proportions.
 // Color picker is an Apple-style swatch grid.
 struct MattePickerView: View {
     @Binding var selectedStyle: MatteStyle
@@ -11,21 +11,22 @@ struct MattePickerView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
 
-            // MARK: Style Selector
+            // MARK: Style Selector — visual tiles
             VStack(alignment: .leading, spacing: 8) {
                 Text("Style")
                     .font(.caption)
                     .foregroundColor(.secondary)
 
-                // Wrap styles in a flow layout using LazyVGrid
                 LazyVGrid(
-                    columns: [
-                        GridItem(.adaptive(minimum: 90), spacing: 6)
-                    ],
-                    spacing: 6
+                    columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 4),
+                    spacing: 10
                 ) {
                     ForEach(MatteStyle.allCases, id: \.self) { style in
-                        StylePill(style: style, isSelected: selectedStyle == style) {
+                        StyleTile(
+                            style: style,
+                            matteColor: selectedColor,
+                            isSelected: selectedStyle == style
+                        ) {
                             selectedStyle = style
                         }
                     }
@@ -56,31 +57,65 @@ struct MattePickerView: View {
     }
 }
 
-// MARK: - StylePill
-// Compact pill-shaped button for matte style selection.
-private struct StylePill: View {
+// MARK: - StyleTile
+// Visual tile that shows a miniature preview of the matte proportions.
+// A tiny 16:9 rectangle with the matte insets drawn at the correct ratios
+// so the user can see the difference between panoramic, modern, flexible, etc.
+private struct StyleTile: View {
     let style: MatteStyle
+    let matteColor: MatteColor
     let isSelected: Bool
     let onTap: () -> Void
 
+    // Tile dimensions — 16:9 mini preview inside a labeled card
+    private let tileWidth: CGFloat = 72
+    private var tileHeight: CGFloat { tileWidth * 9 / 16 }
+
     var body: some View {
-        Text(style.displayName)
-            .font(.caption)
-            .lineLimit(1)
-            .padding(.vertical, 6)
-            .padding(.horizontal, 10)
-            .frame(maxWidth: .infinity)
-            .background(
-                RoundedRectangle(cornerRadius: 8)
-                    .fill(isSelected ? Color.accentColor.opacity(0.15) : Color(NSColor.controlBackgroundColor))
-            )
-            .foregroundColor(isSelected ? .accentColor : .primary)
+        VStack(spacing: 4) {
+            // Mini 16:9 preview showing matte proportions
+            ZStack {
+                if style == .none {
+                    // "None" shows the photo filling the entire area
+                    RoundedRectangle(cornerRadius: 2)
+                        .fill(Color(NSColor.controlBackgroundColor).opacity(0.85))
+                        .frame(width: tileWidth, height: tileHeight)
+                } else {
+                    // Matte color background
+                    RoundedRectangle(cornerRadius: 2)
+                        .fill(matteColor.previewColor)
+                        .frame(width: tileWidth, height: tileHeight)
+
+                    // Photo area inset — dark fill for clear contrast against matte
+                    let insets = MatteInsets.forStyle(style)
+                    let innerW = tileWidth * (1 - insets.leftFraction - insets.rightFraction)
+                    let innerH = tileHeight * (1 - insets.topFraction - insets.bottomFraction)
+
+                    RoundedRectangle(cornerRadius: 1)
+                        .fill(Color(NSColor.controlBackgroundColor).opacity(0.85))
+                        .frame(width: innerW, height: innerH)
+                        .shadow(color: .black.opacity(0.3), radius: 1, x: 0, y: 0.5)
+
+                    // Thin white inner bevel line
+                    RoundedRectangle(cornerRadius: 1)
+                        .stroke(Color.white.opacity(0.8), lineWidth: 0.5)
+                        .frame(width: innerW, height: innerH)
+                }
+            }
+            .frame(width: tileWidth, height: tileHeight)
             .overlay(
-                RoundedRectangle(cornerRadius: 8)
-                    .stroke(isSelected ? Color.accentColor : Color.primary.opacity(0.1), lineWidth: isSelected ? 1.5 : 0.5)
+                RoundedRectangle(cornerRadius: 2)
+                    .stroke(isSelected ? Color.accentColor : Color.clear, lineWidth: 2)
             )
-            .contentShape(Rectangle())
-            .onTapGesture { onTap() }
+
+            Text(style.displayName)
+                .font(.system(size: 9))
+                .foregroundColor(isSelected ? .accentColor : .secondary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
+        }
+        .contentShape(Rectangle())
+        .onTapGesture { onTap() }
     }
 }
 

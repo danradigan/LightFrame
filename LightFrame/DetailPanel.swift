@@ -215,9 +215,9 @@ struct PhotoDetailView: View {
     }
 
     // MARK: - Apply & Display on TV
-    // Compares the picker state against what the TV last confirmed.
-    // Sends change_matte only when needed, then select_image to display.
-    // EXIF and model are updated only after the TV confirms the change.
+    // Sends change_matte (with automatic fallback in TVConnectionManager),
+    // then select_image to display. EXIF and model are updated only after
+    // the TV confirms which matte it actually accepted.
     private func applyAndDisplay() {
         guard tvManager.isConnected,
               let contentID = photo.tvContentID
@@ -227,53 +227,37 @@ struct PhotoDetailView: View {
         matteError = nil
         let previousMatte = photo.matte
         let newMatte = Matte(style: editedStyle, color: editedStyle == .none ? nil : editedColor)
-        let matteChanged = newMatte != previousMatte
-
 
         Task {
-            // Step 1: Always send change_matte to ensure TV matches our intended matte.
-            // The TV's own matte state may differ from our EXIF (changed via remote, etc.)
-            if newMatte.style != .none {
-                do {
-                    try await tvManager.changeMatte(contentID: contentID, matte: newMatte)
-                    // Give the TV time to finish rendering the new matte before select_image
-                    try? await Task.sleep(nanoseconds: 1_000_000_000)
-                } catch {
-                    // Revert UI to the previously confirmed matte
-                    editedStyle = previousMatte?.style ?? AppSettings.defaultMatteStyle
-                    editedColor = previousMatte?.color ?? AppSettings.defaultMatteColor
-                    matteError = "Matte could not be applied — your TV didn't accept this style for this image"
-                    isApplying = false
-
-                    // Auto-dismiss error after 5 seconds
-                    try? await Task.sleep(nanoseconds: 5_000_000_000)
-                    matteError = nil
-                    return
-                }
-            } else {
-                // For "none", also send change_matte (no portrait_matte_id)
-                do {
-                    try await tvManager.changeMatte(contentID: contentID, matte: newMatte)
-                    try? await Task.sleep(nanoseconds: 1_000_000_000)
-                } catch {
-                    // Revert UI to the previously confirmed matte
-                    editedStyle = previousMatte?.style ?? AppSettings.defaultMatteStyle
-                    editedColor = previousMatte?.color ?? AppSettings.defaultMatteColor
-                    matteError = "Matte could not be applied — your TV didn't accept this style for this image"
-                    isApplying = false
-
-                    // Auto-dismiss error after 5 seconds
-                    try? await Task.sleep(nanoseconds: 5_000_000_000)
-                    matteError = nil
-                    return
-                }
+            // Step 1: Apply matte — TVConnectionManager handles fallback chain
+            let confirmedMatte: Matte
+            do {
+                confirmedMatte = try await tvManager.changeMatte(contentID: contentID, matte: newMatte)
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+            } catch {
+                editedStyle = previousMatte?.style ?? AppSettings.defaultMatteStyle
+                editedColor = previousMatte?.color ?? AppSettings.defaultMatteColor
+                matteError = "Matte could not be applied — \(error.localizedDescription)"
+                isApplying = false
+                try? await Task.sleep(nanoseconds: 5_000_000_000)
+                matteError = nil
+                return
             }
 
-            // Step 2: Save confirmed matte to EXIF and update model (only if changed)
+            // If we fell back, update the picker to reflect what actually got applied
+            if confirmedMatte != newMatte {
+                editedStyle = confirmedMatte.style
+                editedColor = confirmedMatte.color ?? AppSettings.defaultMatteColor
+                matteError = "Your TV didn't accept \(newMatte.displayName) — applied \(confirmedMatte.displayName) instead"
+            }
+
+            // Step 2: Save confirmed matte to EXIF and update model
+            let matteChanged = confirmedMatte != previousMatte
             if matteChanged {
                 if photo.isJPEG {
                     let photoURL = photo.url
                     let currentPhoto = photo
+                    let matteToWrite = confirmedMatte
                     await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
                         DispatchQueue.global(qos: .userInitiated).async {
                             guard let collection = DispatchQueue.main.sync(execute: {
@@ -297,12 +281,12 @@ struct PhotoDetailView: View {
                             }
                             let accessGranted = resolved.startAccessingSecurityScopedResource()
                             defer { if accessGranted { resolved.stopAccessingSecurityScopedResource() } }
-                            EXIFManager.writeMatte(newMatte, to: photoURL)
+                            EXIFManager.writeMatte(matteToWrite, to: photoURL)
                             continuation.resume()
                         }
                     }
                 }
-                appState.updateMatte(newMatte, for: photo, newData: nil)
+                appState.updateMatte(confirmedMatte, for: photo, newData: nil)
             }
 
             // Step 3: Display on TV
@@ -315,6 +299,11 @@ struct PhotoDetailView: View {
             isApplying = false
             try? await Task.sleep(nanoseconds: 2_000_000_000)
             saveMessage = nil
+            // Banner auto-dismisses after a longer delay
+            if confirmedMatte != newMatte {
+                try? await Task.sleep(nanoseconds: 6_000_000_000)
+                matteError = nil
+            }
         }
     }
 
@@ -537,56 +526,45 @@ struct TVOnlyDetailView: View {
     }
 
     // Apply matte changes (if any) then display on TV.
-    // On matte failure, reverts the UI and shows an error banner.
+    // Fallback chain on matte rejection:
+    //   1. Try the requested matte
+    //   2. If rejected, fall back to shadowbox + same color
+    // Apply matte (with automatic fallback in TVConnectionManager), then display.
     private func applyAndDisplay() {
         guard tvManager.isConnected else { return }
         isApplying = true
         matteError = nil
         let previousMatte = item.matte
         let newMatte = currentMatte
-        let matteChanged = newMatte != previousMatte
-
 
         Task {
-            // Step 1: Always send change_matte to ensure TV matches our intended matte.
-            if newMatte.style != .none {
-                do {
-                    try await tvManager.changeMatte(contentID: item.id, matte: newMatte)
-                    try? await Task.sleep(nanoseconds: 1_000_000_000)
-                } catch {
-                    // Revert UI to the previously confirmed matte
-                    editedStyle = previousMatte?.style ?? AppSettings.defaultMatteStyle
-                    editedColor = previousMatte?.color ?? AppSettings.defaultMatteColor
-                    matteError = "Matte could not be applied — your TV didn't accept this style for this image"
-                    isApplying = false
-
-                    // Auto-dismiss error after 5 seconds
-                    try? await Task.sleep(nanoseconds: 5_000_000_000)
-                    matteError = nil
-                    return
-                }
-            } else {
-                do {
-                    try await tvManager.changeMatte(contentID: item.id, matte: newMatte)
-                    try? await Task.sleep(nanoseconds: 1_000_000_000)
-                } catch {
-                    // Revert UI to the previously confirmed matte
-                    editedStyle = previousMatte?.style ?? AppSettings.defaultMatteStyle
-                    editedColor = previousMatte?.color ?? AppSettings.defaultMatteColor
-                    matteError = "Matte could not be applied — your TV didn't accept this style for this image"
-                    isApplying = false
-
-                    // Auto-dismiss error after 5 seconds
-                    try? await Task.sleep(nanoseconds: 5_000_000_000)
-                    matteError = nil
-                    return
-                }
+            // Step 1: Apply matte — TVConnectionManager handles fallback chain
+            let confirmedMatte: Matte
+            do {
+                confirmedMatte = try await tvManager.changeMatte(contentID: item.id, matte: newMatte)
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+            } catch {
+                editedStyle = previousMatte?.style ?? AppSettings.defaultMatteStyle
+                editedColor = previousMatte?.color ?? AppSettings.defaultMatteColor
+                matteError = "Matte could not be applied — \(error.localizedDescription)"
+                isApplying = false
+                try? await Task.sleep(nanoseconds: 5_000_000_000)
+                matteError = nil
+                return
             }
 
-            // Step 2: Update in-memory model (only if changed)
+            // If we fell back, update the picker to reflect what actually got applied
+            if confirmedMatte != newMatte {
+                editedStyle = confirmedMatte.style
+                editedColor = confirmedMatte.color ?? AppSettings.defaultMatteColor
+                matteError = "Your TV didn't accept \(newMatte.displayName) — applied \(confirmedMatte.displayName) instead"
+            }
+
+            // Step 2: Update in-memory model
+            let matteChanged = confirmedMatte != previousMatte
             if matteChanged {
                 if let index = appState.tvOnlyItems.firstIndex(where: { $0.id == item.id }) {
-                    appState.tvOnlyItems[index].matte = newMatte
+                    appState.tvOnlyItems[index].matte = confirmedMatte
                     appState.lastTappedTVOnlyItem = appState.tvOnlyItems[index]
                 }
             }
@@ -601,6 +579,10 @@ struct TVOnlyDetailView: View {
             isApplying = false
             try? await Task.sleep(nanoseconds: 2_000_000_000)
             statusMessage = nil
+            if confirmedMatte != newMatte {
+                try? await Task.sleep(nanoseconds: 6_000_000_000)
+                matteError = nil
+            }
         }
     }
 
@@ -698,3 +680,4 @@ struct PreferencesView: View {
         .padding()
     }
 }
+
