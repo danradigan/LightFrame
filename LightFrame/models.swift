@@ -12,9 +12,6 @@ enum MatteStyle: String, CaseIterable, Codable {
     case flexible   = "flexible"
     case shadowbox  = "shadowbox"
     case panoramic  = "panoramic"
-    case triptych   = "triptych"
-    case mix        = "mix"
-    case squares    = "squares"
 
     var displayName: String {
         switch self {
@@ -25,9 +22,6 @@ enum MatteStyle: String, CaseIterable, Codable {
         case .flexible:   return "Flexible"
         case .shadowbox:  return "Shadow Box"
         case .panoramic:  return "Panoramic"
-        case .triptych:   return "Triptych"
-        case .mix:        return "Mix"
-        case .squares:    return "Squares"
         }
     }
 }

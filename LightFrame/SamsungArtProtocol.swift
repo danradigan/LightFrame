@@ -24,13 +24,13 @@ enum SamsungArtProtocol {
     // MARK: - UUID Generation
     // Python: str(uuid.uuid4()) → lowercase hex with hyphens
     // Swift UUID().uuidString is uppercase — we must lowercase it.
-    static func generateUUID() -> String {
+    nonisolated static func generateUUID() -> String {
         UUID().uuidString.lowercased()
     }
 
     // MARK: - Random Connection ID
     // Python: random.randrange(4 * 1024 * 1024 * 1024) → 0..<4294967296
-    static func randomConnectionID() -> Int {
+    nonisolated static func randomConnectionID() -> Int {
         Int(UInt32.random(in: 0 ..< UInt32.max))
     }
 
@@ -47,7 +47,7 @@ enum SamsungArtProtocol {
     //
     // Returns: (envelopeJSONString, requestUUID)
     //
-    static func buildEnvelope(_ innerParams: [String: Any], uuid: String? = nil) throws -> (String, String) {
+    nonisolated static func buildEnvelope(_ innerParams: [String: Any], uuid: String? = nil) throws -> (String, String) {
         var params = innerParams
         let requestUUID = uuid ?? (params["id"] as? String) ?? generateUUID()
         params["id"] = requestUUID
@@ -291,10 +291,10 @@ enum SamsungArtProtocol {
     // Name is base64-encoded. Python: helper.serialize_string(self.name)
     //
 
-    static let remoteControlEndpoint = "samsung.remote.control"
-    static let artAppEndpoint = "com.samsung.art-app"
+    nonisolated static let remoteControlEndpoint = "samsung.remote.control"
+    nonisolated static let artAppEndpoint = "com.samsung.art-app"
 
-    static func websocketURL(
+    nonisolated static func websocketURL(
         host: String,
         port: Int,
         endpoint: String,
@@ -316,18 +316,18 @@ enum SamsungArtProtocol {
         return URL(string: urlString)
     }
 
-    static func remoteControlURL(host: String, port: Int = 8002, token: String? = nil) -> URL? {
+    nonisolated static func remoteControlURL(host: String, port: Int = 8002, token: String? = nil) -> URL? {
         websocketURL(host: host, port: port, endpoint: remoteControlEndpoint, token: token)
     }
 
-    static func artChannelURL(host: String, port: Int = 8002, token: String? = nil) -> URL? {
+    nonisolated static func artChannelURL(host: String, port: Int = 8002, token: String? = nil) -> URL? {
         websocketURL(host: host, port: port, endpoint: artAppEndpoint, token: token)
     }
 
     // MARK: - Helpers
 
     // Python: datetime.now().strftime("%Y:%m:%d %H:%M:%S")
-    private static func currentImageDate() -> String {
+    private nonisolated static func currentImageDate() -> String {
         let df = DateFormatter()
         df.dateFormat = "yyyy:MM:dd HH:mm:ss"
         return df.string(from: Date())

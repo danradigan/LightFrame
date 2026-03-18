@@ -156,12 +156,29 @@ class SamsungArtService: ObservableObject {
 
     // MARK: - Change Matte
     //
-    // Python: change_matte(content_id, matte_id, portrait_matte)
+    // Samsung's change_matte has two independent slots: matte_id (landscape) and
+    // portrait_matte_id (portrait). A single call with both fields only writes
+    // portrait_matte_id. Use changeMatteRaw with one field per call to set each
+    // slot independently. See TVConnectionManager.changeMatte for the two-call pattern.
     //
     func changeMatte(contentID: String, matteID: String, portraitMatteID: String? = nil) async throws {
         let conn = try requireConnection()
         let params = SamsungArtProtocol.changeMatte(contentID: contentID, matteID: matteID, portraitMatteID: portraitMatteID)
-        _ = try await conn.sendCommand(params)
+        _ = try await conn.sendCommand(params, timeout: 15)
+    }
+
+    // Send change_matte with specific fields only — used by TVConnectionManager to
+    // set matte_id and portrait_matte_id independently in two separate calls.
+    func changeMatteRaw(contentID: String, extraParams: [String: String]) async throws {
+        let conn = try requireConnection()
+        var params: [String: Any] = [
+            "request": "change_matte",
+            "content_id": contentID
+        ]
+        for (key, value) in extraParams {
+            params[key] = value
+        }
+        _ = try await conn.sendCommand(params, timeout: 15)
     }
 
     // MARK: - Slideshow

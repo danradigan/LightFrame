@@ -181,12 +181,36 @@ class TVConnectionManager: ObservableObject {
 
     func changeMatte(contentID: String, matte: Matte) async throws {
         let matteToken = matte.apiToken
-        let portraitToken = matte.style != .none ? matteToken : nil
-        try await artService.changeMatte(
-            contentID: contentID,
-            matteID: matteToken,
-            portraitMatteID: portraitToken
-        )
+        if matte.style != .none {
+            // Send two separate change_matte calls to set both slots.
+            // The TV has independent matte_id (landscape) and portrait_matte_id (portrait) slots.
+            // A single change_matte only writes portrait_matte_id; sending matte_id alone
+            // writes to the landscape slot.
+            //
+            // Call 1: matte_id (landscape slot) — must succeed
+            try await artService.changeMatteRaw(
+                contentID: contentID,
+                extraParams: ["matte_id": matteToken]
+            )
+            // Call 2: portrait_matte_id (portrait slot) — best effort
+            // Some styles (modern, modernthin, modernwide) error -7 on portrait_matte_id
+            // for certain resolutions. This is a TV firmware limitation, not a real failure.
+            // The image will render correctly from matte_id for landscape images.
+            do {
+                try await artService.changeMatteRaw(
+                    contentID: contentID,
+                    extraParams: ["portrait_matte_id": matteToken]
+                )
+            } catch {
+                artService.logHandler?("[Matte] portrait_matte_id failed (non-fatal): \(error.localizedDescription)")
+            }
+        } else {
+            // For "none", send matte_id only
+            try await artService.changeMatteRaw(
+                contentID: contentID,
+                extraParams: ["matte_id": matteToken]
+            )
+        }
     }
 
     func getMyPhotos() async throws -> [TVArtItem] {
