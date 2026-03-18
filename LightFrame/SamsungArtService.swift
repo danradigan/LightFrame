@@ -156,22 +156,19 @@ class SamsungArtService: ObservableObject {
 
     // MARK: - Change Matte
     //
-    // Python: change_matte(content_id, matte_id, portrait_matte)
-    //
-    // IMPORTANT: Samsung's change_matte command only writes to portrait_matte_id.
-    // To change the landscape matte_id, we must send two separate calls.
+    // Samsung's change_matte has two independent slots: matte_id (landscape) and
+    // portrait_matte_id (portrait). A single call with both fields only writes
+    // portrait_matte_id. Use changeMatteRaw with one field per call to set each
+    // slot independently. See TVConnectionManager.changeMatte for the two-call pattern.
     //
     func changeMatte(contentID: String, matteID: String, portraitMatteID: String? = nil) async throws {
         let conn = try requireConnection()
         let params = SamsungArtProtocol.changeMatte(contentID: contentID, matteID: matteID, portraitMatteID: portraitMatteID)
-        logHandler?("[Matte] changeMatte: contentID=\(contentID), matteID=\(matteID), portraitMatteID=\(portraitMatteID ?? "nil")")
-        let inner = try await conn.sendCommand(params, timeout: 15)
-        // Log full response for debugging matte issues
-        let rawDump = inner.raw.map { "\($0.key)=\($0.value)" }.sorted().joined(separator: ", ")
-        logHandler?("[Matte] changeMatte response: event=\(inner.event), isError=\(inner.isError), raw={\(rawDump)}")
+        _ = try await conn.sendCommand(params, timeout: 15)
     }
 
-    // Send change_matte with a raw param dictionary — for debugging/testing new field combos.
+    // Send change_matte with specific fields only — used by TVConnectionManager to
+    // set matte_id and portrait_matte_id independently in two separate calls.
     func changeMatteRaw(contentID: String, extraParams: [String: String]) async throws {
         let conn = try requireConnection()
         var params: [String: Any] = [
@@ -181,11 +178,7 @@ class SamsungArtService: ObservableObject {
         for (key, value) in extraParams {
             params[key] = value
         }
-        let paramDesc = extraParams.map { "\($0.key)=\($0.value)" }.sorted().joined(separator: ", ")
-        logHandler?("[Matte] changeMatteRaw: contentID=\(contentID), params={\(paramDesc)}")
-        let inner = try await conn.sendCommand(params, timeout: 15)
-        let rawDump = inner.raw.map { "\($0.key)=\($0.value)" }.sorted().joined(separator: ", ")
-        logHandler?("[Matte] changeMatteRaw response: event=\(inner.event), isError=\(inner.isError), raw={\(rawDump)}")
+        _ = try await conn.sendCommand(params, timeout: 15)
     }
 
     // MARK: - Slideshow

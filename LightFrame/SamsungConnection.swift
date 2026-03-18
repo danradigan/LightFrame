@@ -328,13 +328,7 @@ actor SamsungConnection {
         }
 
         // No pending request matched — this is a broadcast (artmode_status, etc.)
-        // Dump full payload for matte/image broadcasts to help debug matte issues
-        if subEvent == "matte_changed" || subEvent == "image_selected" {
-            let rawDump = inner.raw.map { "\($0.key)=\($0.value)" }.sorted().joined(separator: ", ")
-            log("📩 Broadcast \(subEvent) full payload: {\(rawDump)}")
-        } else {
-            log("📩 Unmatched d2d event: \(subEvent)")
-        }
+        log("📩 Unmatched d2d event: \(subEvent)")
     }
 
     // MARK: - Fail All Pending

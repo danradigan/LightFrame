@@ -1,12 +1,5 @@
 import SwiftUI
 
-// Shared timestamp formatter for matte picker logging
-private let pickerTimestampFormatter: DateFormatter = {
-    let f = DateFormatter()
-    f.dateFormat = "HH:mm:ss.SSS"
-    return f
-}()
-
 // MARK: - MattePickerView
 // Shared matte style + color picker used in both PhotoDetailView and TVOnlyDetailView.
 // Style selector is a compact wrapped row of pill buttons.
@@ -33,8 +26,6 @@ struct MattePickerView: View {
                 ) {
                     ForEach(MatteStyle.allCases, id: \.self) { style in
                         StylePill(style: style, isSelected: selectedStyle == style) {
-                            let ts = pickerTimestampFormatter.string(from: Date())
-                            print("[Matte \(ts)] 👆 STYLE TAP: \(style.rawValue) (was \(selectedStyle.rawValue))")
                             selectedStyle = style
                         }
                     }
@@ -54,8 +45,6 @@ struct MattePickerView: View {
                     ) {
                         ForEach(MatteColor.allCases, id: \.self) { color in
                             ColorSwatch(color: color, isSelected: selectedColor == color) {
-                                let ts = pickerTimestampFormatter.string(from: Date())
-                                print("[Matte \(ts)] 🎨 COLOR TAP: \(color.rawValue) (was \(selectedColor.rawValue))")
                                 selectedColor = color
                             }
                         }
