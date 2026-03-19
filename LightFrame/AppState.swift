@@ -60,8 +60,13 @@ class AppState: ObservableObject {
     @Published var isScanning: Bool = false
     @Published var scanningCollectionID: UUID? = nil
 
-    // MARK: - Thumbnail Size
-    @Published var thumbnailSize: CGFloat = 160
+    // MARK: - Thumbnail Size (persisted to UserDefaults)
+    @Published var thumbnailSize: CGFloat = {
+        let stored = UserDefaults.standard.double(forKey: "thumbnailSize")
+        return stored > 0 ? CGFloat(stored) : 160
+    }() {
+        didSet { UserDefaults.standard.set(Double(thumbnailSize), forKey: "thumbnailSize") }
+    }
 
     // Zoom: 6-point scale matching ZoomLevel enum.
     // Cmd+< shrinks, Cmd+> grows, Cmd+0 resets to actual size (level 3).
@@ -401,6 +406,9 @@ class AppState: ObservableObject {
         if let encoded = try? JSONEncoder().encode(data) {
             try? encoded.write(to: storageURL)
         }
+        // Persist selected TV and collection IDs so we restore the right ones on launch
+        UserDefaults.standard.set(selectedTV?.id.uuidString, forKey: "selectedTVID")
+        UserDefaults.standard.set(selectedCollection?.id.uuidString, forKey: "selectedCollectionID")
     }
 
     func load() {
@@ -433,11 +441,28 @@ class AppState: ObservableObject {
 
         tvs = decoded.tvs
         tvOnlyItems = decoded.tvOnlyItems ?? []
-        selectedCollection = collections.first
+
+        // Restore last selected collection by persisted ID, fallback to first
+        if let savedID = UserDefaults.standard.string(forKey: "selectedCollectionID"),
+           let uuid = UUID(uuidString: savedID),
+           let match = collections.first(where: { $0.id == uuid }) {
+            selectedCollection = match
+        } else {
+            selectedCollection = collections.first
+        }
 
         // Restore selectedTV — this is one of the three allowed places to set it.
+        // We try to restore by persisted ID, fallback to first.
         // We clear isReachable on load because we haven't verified connectivity yet.
-        selectedTV = tvs.first.map { tv in
+        let targetTV: TV?
+        if let savedID = UserDefaults.standard.string(forKey: "selectedTVID"),
+           let uuid = UUID(uuidString: savedID),
+           let match = tvs.first(where: { $0.id == uuid }) {
+            targetTV = match
+        } else {
+            targetTV = tvs.first
+        }
+        selectedTV = targetTV.map { tv in
             var t = tv
             t.isReachable = false
             return t

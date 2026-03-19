@@ -30,6 +30,7 @@ struct LightFrameApp: App {
                 .environmentObject(tvManager)
                 // Set a sensible minimum window size
                 .frame(minWidth: 900, minHeight: 600)
+                .background(WindowFrameAutosave())
         }
         .windowStyle(.titleBar)
         .windowToolbarStyle(.unified)
@@ -149,6 +150,43 @@ struct LightFrameApp: App {
         Settings {
             PreferencesView()
                 .environmentObject(appState)
+        }
+    }
+
+    // MARK: - Window Frame Autosave
+    /// Restores window frame before the first render and validates it's on-screen.
+    /// Uses viewDidMoveToWindow (fires during window setup, before display) to
+    /// avoid the flash of default-size → saved-size.
+    private struct WindowFrameAutosave: NSViewRepresentable {
+        func makeNSView(context: Context) -> NSView { WindowConfigView() }
+        func updateNSView(_ nsView: NSView, context: Context) {}
+    }
+
+    private class WindowConfigView: NSView {
+        private var configured = false
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            guard let window = window, !configured else { return }
+            configured = true
+
+            window.setFrameAutosaveName("MainWindow")
+
+            // If the restored frame doesn't intersect any visible screen
+            // (e.g. external monitor disconnected), reset to a sensible default.
+            let onScreen = NSScreen.screens.contains { screen in
+                screen.visibleFrame.intersects(window.frame)
+            }
+            if !onScreen {
+                if let screen = NSScreen.main ?? NSScreen.screens.first {
+                    let defaultSize = NSSize(width: 1200, height: 800)
+                    let origin = NSPoint(
+                        x: screen.visibleFrame.midX - defaultSize.width / 2,
+                        y: screen.visibleFrame.midY - defaultSize.height / 2
+                    )
+                    window.setFrame(NSRect(origin: origin, size: defaultSize), display: false)
+                }
+            }
         }
     }
 

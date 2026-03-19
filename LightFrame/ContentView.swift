@@ -6,6 +6,10 @@ struct ContentView: View {
     @EnvironmentObject var appState: AppState
     @EnvironmentObject var tvManager: TVConnectionManager
 
+    // Sidebar visibility — persisted via AppStorage
+    @AppStorage("sidebarVisibility") private var savedVisibility: String = "all"
+    @State private var columnVisibility: NavigationSplitViewVisibility = .all
+
     // Toast confirmation state
     @State private var toastMessage: String = ""
     @State private var showToast: Bool = false
@@ -17,7 +21,7 @@ struct ContentView: View {
     var body: some View {
         VStack(spacing: 0) {
             // MARK: Main Three-Column Layout
-            NavigationSplitView {
+            NavigationSplitView(columnVisibility: $columnVisibility) {
                 SidebarView()
                     .navigationSplitViewColumnWidth(min: 200, ideal: 220, max: 260)
             } content: {
@@ -28,6 +32,20 @@ struct ContentView: View {
                     .navigationSplitViewColumnWidth(min: 300, ideal: 380, max: 580)
             }
             .environmentObject(tvManager)
+            .onAppear {
+                switch savedVisibility {
+                case "detailOnly": columnVisibility = .detailOnly
+                case "doubleColumn": columnVisibility = .doubleColumn
+                default: columnVisibility = .all
+                }
+            }
+            .onChange(of: columnVisibility) {
+                switch columnVisibility {
+                case .detailOnly: savedVisibility = "detailOnly"
+                case .doubleColumn: savedVisibility = "doubleColumn"
+                default: savedVisibility = "all"
+                }
+            }
 
             Divider()
 
