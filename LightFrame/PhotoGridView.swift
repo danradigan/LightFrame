@@ -152,6 +152,27 @@ struct PhotoGridView: View {
                 scanTVEngine = nil
             }
         }
+        // Menu bar trigger: Scan TV
+        .onChange(of: appState.triggerScanTV) {
+            if appState.triggerScanTV {
+                appState.triggerScanTV = false
+                startScanTV()
+            }
+        }
+        // Menu bar trigger: Delete Selected
+        .onChange(of: appState.triggerDeleteSelected) {
+            if appState.triggerDeleteSelected {
+                appState.triggerDeleteSelected = false
+                confirmDeleteSelected()
+            }
+        }
+        // Arrow key navigation
+        .onKeyPress(.leftArrow)  { navigateGrid(direction: .left);  return .handled }
+        .onKeyPress(.rightArrow) { navigateGrid(direction: .right); return .handled }
+        .onKeyPress(.upArrow)    { navigateGrid(direction: .up);    return .handled }
+        .onKeyPress(.downArrow)  { navigateGrid(direction: .down);  return .handled }
+        .focusable(interactions: .activate)
+        .focusEffectDisabled()
         // Delete confirmation alert
         .alert(
             "Remove from TV",
@@ -261,6 +282,39 @@ struct PhotoGridView: View {
         } else {
             appState.selectTVOnlyItem(item)
         }
+    }
+
+    // MARK: - Arrow Key Navigation
+    enum NavigationDirection { case left, right, up, down }
+
+    private func navigateGrid(direction: NavigationDirection) {
+        let photos = appState.filteredPhotos
+        guard !photos.isEmpty else { return }
+
+        // Estimate column count from thumbnail size and a reasonable grid width
+        let colCount = max(1, Int((600 / (appState.thumbnailSize + 20)).rounded(.down)))
+
+        // Find current index
+        let currentIndex: Int
+        if let lastPhoto = appState.lastTappedPhoto,
+           let idx = photos.firstIndex(where: { $0.id == lastPhoto.id }) {
+            currentIndex = idx
+        } else {
+            // Nothing selected — start at first photo
+            appState.selectPhoto(photos[0])
+            return
+        }
+
+        let newIndex: Int
+        switch direction {
+        case .left:  newIndex = max(0, currentIndex - 1)
+        case .right: newIndex = min(photos.count - 1, currentIndex + 1)
+        case .up:    newIndex = max(0, currentIndex - colCount)
+        case .down:  newIndex = min(photos.count - 1, currentIndex + colCount)
+        }
+
+        guard newIndex != currentIndex else { return }
+        appState.selectPhoto(photos[newIndex])
     }
 
     @ViewBuilder

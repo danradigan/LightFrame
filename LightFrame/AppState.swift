@@ -63,6 +63,29 @@ class AppState: ObservableObject {
     // MARK: - Thumbnail Size
     @Published var thumbnailSize: CGFloat = 160
 
+    // Zoom: 6-point scale matching ZoomLevel enum.
+    // Cmd+< shrinks, Cmd+> grows, Cmd+0 resets to actual size (level 3).
+    func zoomIn() {
+        guard let current = ZoomLevel.closest(to: thumbnailSize),
+              let next = ZoomLevel(rawValue: current.rawValue + 1) else { return }
+        thumbnailSize = next.cgFloatValue
+    }
+
+    func zoomOut() {
+        guard let current = ZoomLevel.closest(to: thumbnailSize),
+              let next = ZoomLevel(rawValue: current.rawValue - 1) else { return }
+        thumbnailSize = next.cgFloatValue
+    }
+
+    func zoomActualSize() {
+        thumbnailSize = ZoomLevel.level3.cgFloatValue
+    }
+
+    // MARK: - Menu Triggers
+    // Flags set by menu commands, observed by views that own the corresponding sheets.
+    @Published var triggerScanTV: Bool = false
+    @Published var triggerDeleteSelected: Bool = false
+
     // MARK: - Persistence URL
     private let storageURL: URL = {
         let appSupport = FileManager.default.urls(
@@ -421,6 +444,27 @@ class AppState: ObservableObject {
         }
 
         save()
+    }
+}
+
+// MARK: - Zoom Levels
+// 6-point scale for thumbnail sizes. Cmd+< / Cmd+> step through these.
+enum ZoomLevel: Int, CaseIterable {
+    case level1 = 1, level2, level3, level4, level5, level6
+
+    var cgFloatValue: CGFloat {
+        switch self {
+        case .level1: return 80
+        case .level2: return 120
+        case .level3: return 160
+        case .level4: return 200
+        case .level5: return 240
+        case .level6: return 280
+        }
+    }
+
+    static func closest(to value: CGFloat) -> ZoomLevel? {
+        allCases.min(by: { abs($0.cgFloatValue - value) < abs($1.cgFloatValue - value) })
     }
 }
 
