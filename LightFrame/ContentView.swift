@@ -4,15 +4,11 @@ import SwiftUI
 // Main three-column layout with a footer bar containing slideshow controls.
 struct ContentView: View {
     @EnvironmentObject var appState: AppState
-    @StateObject private var tvManager: TVConnectionManager
+    @EnvironmentObject var tvManager: TVConnectionManager
 
     // Toast confirmation state
     @State private var toastMessage: String = ""
     @State private var showToast: Bool = false
-
-    init(appState: AppState) {
-        _tvManager = StateObject(wrappedValue: TVConnectionManager(appState: appState))
-    }
 
     var isConnected: Bool {
         tvManager.isConnected
