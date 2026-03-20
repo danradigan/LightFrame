@@ -287,6 +287,12 @@ struct PhotoDetailView: View {
                     }
                 }
                 appState.updateMatte(confirmedMatte, for: photo, newData: nil)
+
+                // Update SyncStore cache so matte stays current
+                if let tv = appState.selectedTV {
+                    let syncStore = SyncStoreManager.shared.store(for: tv)
+                    syncStore.updateMatte(confirmedMatte, for: photo.filename)
+                }
             }
 
             // Step 3: Display on TV
@@ -378,6 +384,12 @@ struct PhotoDetailView: View {
 
             if writeSuccess {
                 appState.updateMatte(newMatte, for: currentPhoto, newData: updatedData)
+
+                // Update SyncStore cache
+                if let tv = appState.selectedTV {
+                    let syncStore = SyncStoreManager.shared.store(for: tv)
+                    syncStore.updateMatte(newMatte, for: currentPhoto.filename)
+                }
             }
 
             try? await Task.sleep(nanoseconds: 2_000_000_000)
@@ -560,12 +572,22 @@ struct TVOnlyDetailView: View {
                 matteError = "Your TV didn't accept \(newMatte.displayName) — applied \(confirmedMatte.displayName) instead"
             }
 
-            // Step 2: Update in-memory model
+            // Step 2: Update in-memory model and SyncStore
             let matteChanged = confirmedMatte != previousMatte
             if matteChanged {
                 if let index = appState.tvOnlyItems.firstIndex(where: { $0.id == item.id }) {
                     appState.tvOnlyItems[index].matte = confirmedMatte
                     appState.lastTappedTVOnlyItem = appState.tvOnlyItems[index]
+                }
+                // Update SyncStore cache
+                if let tv = appState.selectedTV {
+                    let syncStore = SyncStoreManager.shared.store(for: tv)
+                    // Update the tvOnlyItem in the SyncStore
+                    var updatedItems = syncStore.tvOnlyItems
+                    if let idx = updatedItems.firstIndex(where: { $0.id == item.id }) {
+                        updatedItems[idx].matte = confirmedMatte
+                        syncStore.setTVOnlyItems(updatedItems)
+                    }
                 }
             }
 
@@ -593,12 +615,20 @@ struct TVOnlyDetailView: View {
         Task {
             do {
                 try await tvManager.deletePhotos(contentIDs: [item.id])
+                if let tv = appState.selectedTV {
+                    let syncStore = SyncStoreManager.shared.store(for: tv)
+                    syncStore.removeTVOnlyItem(contentID: item.id)
+                }
                 appState.tvOnlyItems.removeAll { $0.id == item.id }
                 appState.lastTappedTVOnlyItem = nil
                 statusMessage = "✓ Removed"
             } catch {
                 let msg = error.localizedDescription
                 if msg.contains("-10") {
+                    if let tv = appState.selectedTV {
+                        let syncStore = SyncStoreManager.shared.store(for: tv)
+                        syncStore.removeTVOnlyItem(contentID: item.id)
+                    }
                     appState.tvOnlyItems.removeAll { $0.id == item.id }
                     appState.lastTappedTVOnlyItem = nil
                 } else {

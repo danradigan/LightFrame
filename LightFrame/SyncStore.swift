@@ -12,6 +12,12 @@ import Foundation
 // local record and offer a "Reconcile with TV" option to resync if needed.
 class SyncStore {
 
+    // MARK: - Source
+    enum Source: String, Codable {
+        case lightframe       // Uploaded from LightFrame
+        case tvOriginated     // Already on TV (Samsung art, other app, etc.)
+    }
+
     // MARK: - Record
     // One record per uploaded photo, per TV
     struct Record: Codable {
@@ -19,12 +25,24 @@ class SyncStore {
         let tvContentID: String     // e.g. "MY-C0042" — assigned by the TV on upload
         let uploadedAt: Date        // When it was uploaded
         var matte: Matte?           // The matte that was set when uploaded
+        var source: Source?         // Where this photo came from
+        var lastSyncedAt: Date?     // When this record was last verified against the TV
+    }
+
+    // MARK: - Persistence Wrapper
+    // On-disk format wraps records + tvOnlyItems + metadata
+    private struct StoragePayload: Codable {
+        var records: [String: Record]
+        var tvOnlyItems: [TVOnlyItem]
+        var lastFullSyncDate: Date?
     }
 
     // MARK: - Properties
     private let tvID: UUID
     private let storageURL: URL
     private(set) var records: [String: Record] = [:]   // Keyed by filename
+    private(set) var tvOnlyItems: [TVOnlyItem] = []
+    var lastFullSyncDate: Date?
 
     // MARK: - Init
     /// Create a SyncStore for a specific TV.
@@ -77,7 +95,9 @@ class SyncStore {
             filename: filename,
             tvContentID: tvContentID,
             uploadedAt: Date(),
-            matte: matte
+            matte: matte,
+            source: .lightframe,
+            lastSyncedAt: Date()
         )
         records[filename] = record
         save()
@@ -94,12 +114,15 @@ class SyncStore {
     /// Remove the record for a TV content ID (used when we only know the ID, not filename)
     func recordDeletion(tvContentID: String) {
         records = records.filter { $0.value.tvContentID != tvContentID }
+        tvOnlyItems.removeAll { $0.id == tvContentID }
         save()
     }
 
     /// Clear all records — used when doing a full reset
     func clearAll() {
         records = [:]
+        tvOnlyItems = []
+        lastFullSyncDate = nil
         save()
         print("💾 SyncStore: Cleared all records")
     }
@@ -112,27 +135,79 @@ class SyncStore {
                 filename: item.filename,
                 tvContentID: item.contentID,
                 uploadedAt: Date(),
-                matte: item.matte
+                matte: item.matte,
+                source: .lightframe,
+                lastSyncedAt: Date()
             )
         }
         save()
         print("💾 SyncStore: Reconciled with \(tvItems.count) TV items")
     }
 
+    /// Update the matte for a specific filename in the cache
+    func updateMatte(_ matte: Matte, for filename: String) {
+        guard records[filename] != nil else { return }
+        records[filename]?.matte = matte
+        records[filename]?.lastSyncedAt = Date()
+        save()
+    }
+
+    /// Update tvOnlyItems from a TV scan
+    func setTVOnlyItems(_ items: [TVOnlyItem]) {
+        tvOnlyItems = items
+        save()
+    }
+
+    /// Remove a TV-only item by content ID
+    func removeTVOnlyItem(contentID: String) {
+        tvOnlyItems.removeAll { $0.id == contentID }
+        save()
+    }
+
+    /// Mark a full sync as complete
+    func markFullSync() {
+        lastFullSyncDate = Date()
+        // Update lastSyncedAt on all records
+        for key in records.keys {
+            records[key]?.lastSyncedAt = Date()
+        }
+        save()
+    }
+
     // MARK: - Persistence
 
     private func save() {
-        if let encoded = try? JSONEncoder().encode(records) {
+        let payload = StoragePayload(
+            records: records,
+            tvOnlyItems: tvOnlyItems,
+            lastFullSyncDate: lastFullSyncDate
+        )
+        if let encoded = try? JSONEncoder().encode(payload) {
             try? encoded.write(to: storageURL)
         }
     }
 
     private func load() {
-        guard let data = try? Data(contentsOf: storageURL),
-              let decoded = try? JSONDecoder().decode([String: Record].self, from: data)
-        else { return }
-        records = decoded
-        print("💾 SyncStore: Loaded \(records.count) records for TV \(tvID)")
+        guard let data = try? Data(contentsOf: storageURL) else { return }
+
+        // Try new format first
+        if let decoded = try? JSONDecoder().decode(StoragePayload.self, from: data) {
+            records = decoded.records
+            tvOnlyItems = decoded.tvOnlyItems
+            lastFullSyncDate = decoded.lastFullSyncDate
+            print("💾 SyncStore: Loaded \(records.count) records, \(tvOnlyItems.count) TV-only items for TV \(tvID)")
+            return
+        }
+
+        // Migration: old format was bare [String: Record]
+        if let decoded = try? JSONDecoder().decode([String: Record].self, from: data) {
+            records = decoded
+            tvOnlyItems = []
+            lastFullSyncDate = nil
+            print("💾 SyncStore: Migrated \(records.count) records from old format for TV \(tvID)")
+            save() // Re-save in new format
+            return
+        }
     }
 }
 

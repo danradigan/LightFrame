@@ -8,6 +8,7 @@ import SwiftUI
 // MARK: - TVRowView
 // Shows a single TV in the sidebar with connection status,
 // and a context menu for rename, protocol tests, and remove.
+// Visually highlights when selected, matching the sidebar selection style.
 struct TVRowView: View {
     @EnvironmentObject var appState: AppState
     @EnvironmentObject var tvManager: TVConnectionManager
@@ -20,32 +21,37 @@ struct TVRowView: View {
     var isSelected: Bool { appState.selectedTV?.id == tv.id }
 
     var body: some View {
-        HStack(spacing: 8) {
-            // Green = reachable, grey = offline
+        Label {
+            HStack {
+                Text(tv.name)
+                    .fontWeight(isSelected ? .semibold : .regular)
+                Spacer()
+                Text(tv.ipAddress)
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+            }
+        } icon: {
             Circle()
                 .fill(tv.isReachable ? Color.green : Color.gray)
                 .frame(width: 8, height: 8)
-
-            Text(tv.name)
-                .fontWeight(isSelected ? .semibold : .regular)
-
-            Spacer()
-
-            Text(tv.ipAddress)
-                .font(.caption2)
-                .foregroundColor(.secondary)
         }
+        .listRowBackground(
+            isSelected
+                ? RoundedRectangle(cornerRadius: 5).fill(Color.accentColor)
+                : nil
+        )
+        .foregroundColor(isSelected ? .white : nil)
         .contentShape(Rectangle())
         .onTapGesture {
             appState.selectedTV = tv
         }
         .contextMenu {
-            Button("Rename…") {
+            Button("Rename...") {
                 renameName = tv.name
                 isRenaming = true
             }
             Divider()
-            Button("Protocol Tests…") {
+            Button("Protocol Tests...") {
                 showProtocolTests = true
             }
             Divider()
