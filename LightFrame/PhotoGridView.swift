@@ -119,15 +119,19 @@ struct PhotoGridView: View {
         // Menu bar trigger: Scan TV
         .onChange(of: appState.triggerScanTV) {
             if appState.triggerScanTV {
-                appState.triggerScanTV = false
-                startScanTV()
+                Task { @MainActor in
+                    appState.triggerScanTV = false
+                    startScanTV()
+                }
             }
         }
         // Menu bar trigger: Delete Selected
         .onChange(of: appState.triggerDeleteSelected) {
             if appState.triggerDeleteSelected {
-                appState.triggerDeleteSelected = false
-                confirmDeleteSelected()
+                Task { @MainActor in
+                    appState.triggerDeleteSelected = false
+                    confirmDeleteSelected()
+                }
             }
         }
         // Arrow key navigation

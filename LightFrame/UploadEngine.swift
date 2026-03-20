@@ -325,21 +325,9 @@ class UploadEngine: ObservableObject, Identifiable {
     // MARK: - Load Image Data
     // Opens the collection's security-scoped bookmark to read the file.
     private func loadImageData(for photo: Photo, collection: Collection) -> Data? {
-        var resolvedURL = collection.folderURL
-        var accessGranted = false
-
-        if let bookmarkData = collection.bookmarkData {
-            var isStale = false
-            if let url = try? URL(
-                resolvingBookmarkData: bookmarkData,
-                options: .withSecurityScope,
-                relativeTo: nil,
-                bookmarkDataIsStale: &isStale
-            ) { resolvedURL = url }
-        }
-
-        accessGranted = resolvedURL.startAccessingSecurityScopedResource()
+        let (resolvedURL, accessGranted) = appState.resolveBookmark(for: collection)
         defer { if accessGranted { resolvedURL.stopAccessingSecurityScopedResource() } }
+        guard accessGranted else { return nil }
 
         return try? Data(contentsOf: photo.url)
     }

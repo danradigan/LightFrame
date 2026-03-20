@@ -93,18 +93,21 @@ class AppState: ObservableObject {
     @Published var activeStyleFilters: Set<MatteStyle> = []
     @Published var activeColorFilters: Set<MatteColor> = []
 
-    // MARK: - Cached SyncStore Count
-    // Cached count of photos on the selected TV (avoids SyncStore access during view body).
+    // MARK: - Cached SyncStore Data
+    // Cached data from the selected TV's SyncStore to avoid accessing SyncStore during view body.
     // Updated when: selectedTV changes, after TV scan, after upload/delete.
     @Published var syncStorePhotoCount: Int = 0
+    var cachedUploadedFilenames: Set<String> = []
 
-    func refreshSyncStorePhotoCount() {
+    func refreshSyncStoreCache() {
         guard let tv = selectedTV else {
             syncStorePhotoCount = 0
+            cachedUploadedFilenames = []
             return
         }
         let store = SyncStoreManager.shared.store(for: tv)
         syncStorePhotoCount = store.records.count + store.tvOnlyItems.count
+        cachedUploadedFilenames = store.uploadedFilenames
     }
 
     // MARK: - Upload State
@@ -118,6 +121,7 @@ class AppState: ObservableObject {
     // MARK: - Scan State
     @Published var isScanning: Bool = false
     @Published var scanningCollectionID: UUID? = nil
+
 
     // MARK: - Thumbnail Size (persisted to UserDefaults)
     @Published var thumbnailSize: CGFloat = {
@@ -238,6 +242,81 @@ class AppState: ObservableObject {
         save()
     }
 
+    // MARK: - Bookmark Resolution
+    /// Resolves a collection's security-scoped bookmark, regenerating it if stale.
+    /// If the bookmark is broken (e.g. folder deleted & recreated), silently pops
+    /// an NSOpenPanel pre-navigated to the expected folder so the user just clicks Open.
+    func resolveBookmark(for collection: Collection) -> (url: URL, accessGranted: Bool) {
+        var resolvedURL = collection.folderURL
+        var needsNewBookmark = false
+
+        if let bookmarkData = collection.bookmarkData {
+            var isStale = false
+            if let url = try? URL(
+                resolvingBookmarkData: bookmarkData,
+                options: .withSecurityScope,
+                relativeTo: nil,
+                bookmarkDataIsStale: &isStale
+            ) {
+                resolvedURL = url
+                if isStale { needsNewBookmark = true }
+            } else {
+                needsNewBookmark = true
+            }
+        }
+
+        let accessGranted = resolvedURL.startAccessingSecurityScopedResource()
+
+        // Stale but still accessible — silently regenerate
+        if accessGranted && needsNewBookmark {
+            refreshBookmark(for: collection, url: resolvedURL)
+        }
+
+        // Completely broken — ask user to re-select the folder
+        if !accessGranted {
+            if let newURL = promptForFolderAccess(collection: collection) {
+                refreshBookmark(for: collection, url: newURL)
+                let granted = newURL.startAccessingSecurityScopedResource()
+                return (newURL, granted)
+            }
+            return (resolvedURL, false)
+        }
+
+        return (resolvedURL, accessGranted)
+    }
+
+    /// Opens a folder picker pre-navigated to the collection's expected folder.
+    /// Returns the selected URL or nil if the user cancels.
+    private func promptForFolderAccess(collection: Collection) -> URL? {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Open"
+        panel.message = "Re-select the folder for \"\(collection.name)\" to restore access"
+        panel.directoryURL = collection.folderURL.deletingLastPathComponent()
+
+        guard panel.runModal() == .OK, let url = panel.url else { return nil }
+        _ = url.startAccessingSecurityScopedResource()
+        return url
+    }
+
+    /// Regenerates the security-scoped bookmark for a collection after the user
+    /// re-selects the folder or after a stale bookmark is resolved.
+    func refreshBookmark(for collection: Collection, url: URL) {
+        guard let index = collections.firstIndex(where: { $0.id == collection.id }) else { return }
+        collections[index].bookmarkData = try? url.bookmarkData(
+            options: .withSecurityScope,
+            includingResourceValuesForKeys: nil,
+            relativeTo: nil
+        )
+        collections[index].folderURL = url
+        if selectedCollection?.id == collection.id {
+            selectedCollection = collections[index]
+        }
+        save()
+    }
+
     // MARK: - Scan Collection
     /// Scans the selected collection's folder and updates its photos.
     func scanSelectedCollection() async {
@@ -250,18 +329,8 @@ class AppState: ObservableObject {
             scanningCollectionID = nil
         }
 
-        var resolvedURL = collection.folderURL
-        if let bookmarkData = collection.bookmarkData {
-            var isStale = false
-            if let url = try? URL(
-                resolvingBookmarkData: bookmarkData,
-                options: .withSecurityScope,
-                relativeTo: nil,
-                bookmarkDataIsStale: &isStale
-            ) { resolvedURL = url }
-        }
-
-        let accessGranted = resolvedURL.startAccessingSecurityScopedResource()
+        let (resolvedURL, accessGranted) = resolveBookmark(for: collection)
+        guard accessGranted else { return }
 
         let syncStore: SyncStore
         if let tv = selectedTV {
@@ -333,7 +402,7 @@ class AppState: ObservableObject {
         collections[colIndex].photos[photoIndex].tvContentID = contentID
         collections[colIndex].photos[photoIndex].isOnTV = true
         if selectedCollection?.id == collection.id { selectedCollection = collections[colIndex] }
-        refreshSyncStorePhotoCount()
+        refreshSyncStoreCache()
         save()
     }
 
@@ -347,7 +416,7 @@ class AppState: ObservableObject {
         }
         let syncStore = SyncStoreManager.shared.store(for: tv)
         tvOnlyItems = syncStore.tvOnlyItems
-        refreshSyncStorePhotoCount()
+        refreshSyncStoreCache()
     }
 
     // MARK: - Photo Selection
@@ -454,10 +523,8 @@ class AppState: ObservableObject {
         case .photosOnTV:
             // Show photos that are on the selected TV (from all collections)
             guard selectedTV != nil else { return [] }
-            let syncStore: SyncStore? = selectedTV.map { SyncStoreManager.shared.store(for: $0) }
-            let uploadedFilenames = syncStore?.uploadedFilenames ?? []
             photos = collections.flatMap { $0.photos }
-                .filter { uploadedFilenames.contains($0.filename) || $0.isOnTV }
+                .filter { cachedUploadedFilenames.contains($0.filename) || $0.isOnTV }
             // Deduplicate by filename (same file in multiple collections)
             var seen = Set<String>()
             photos = photos.filter { seen.insert($0.filename).inserted }
@@ -626,7 +693,7 @@ class AppState: ObservableObject {
         loadTVOnlyItemsFromSyncStore()
 
         // Cache the sync store count
-        refreshSyncStorePhotoCount()
+        refreshSyncStoreCache()
 
         save()
     }

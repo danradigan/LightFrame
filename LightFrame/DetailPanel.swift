@@ -269,19 +269,11 @@ struct PhotoDetailView: View {
                                 return
                             }
 
-                            var resolved = collection.folderURL
-                            if let bookmarkData = collection.bookmarkData {
-                                var isStale = false
-                                if let url = try? URL(
-                                    resolvingBookmarkData: bookmarkData,
-                                    options: .withSecurityScope,
-                                    relativeTo: nil,
-                                    bookmarkDataIsStale: &isStale
-                                ) { resolved = url }
-                            }
-                            let accessGranted = resolved.startAccessingSecurityScopedResource()
+                            let (resolved, accessGranted) = appState.resolveBookmark(for: collection)
                             defer { if accessGranted { resolved.stopAccessingSecurityScopedResource() } }
-                            EXIFManager.writeMatte(matteToWrite, to: photoURL)
+                            if accessGranted {
+                                EXIFManager.writeMatte(matteToWrite, to: photoURL)
+                            }
                             continuation.resume()
                         }
                     }
@@ -347,18 +339,8 @@ struct PhotoDetailView: View {
                             col.photos.contains(where: { $0.id == currentPhoto.id })
                         }) else { return }
 
-                        var resolved = collection.folderURL
-                        if let bookmarkData = collection.bookmarkData {
-                            var isStale = false
-                            if let url = try? URL(
-                                resolvingBookmarkData: bookmarkData,
-                                options: .withSecurityScope,
-                                relativeTo: nil,
-                                bookmarkDataIsStale: &isStale
-                            ) { resolved = url }
-                        }
-
-                        accessGranted = resolved.startAccessingSecurityScopedResource()
+                        let (resolved, granted) = appState.resolveBookmark(for: collection)
+                        accessGranted = granted
                         folderURL = resolved
                     }
 

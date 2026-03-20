@@ -35,6 +35,8 @@ class TVConnectionManager: ObservableObject {
     // Slideshow tracking
     @Published var currentSlideshowOrder: SlideshowOrder       = .random
     @Published var currentSlideshowInterval: SlideshowInterval = .fifteenMinutes
+    // True while reading slideshow status from the TV — suppresses onChange write-back
+    var isSyncingSlideshow: Bool = false
 
     // MARK: - Private
     private var connectedTVID: UUID? = nil
@@ -87,7 +89,10 @@ class TVConnectionManager: ObservableObject {
                       let tv = self.appState.tvs.first(where: { $0.id == tvID })
                 else { return }
                 let reachable = state == .connected
-                self.appState.updateReachability(reachable, for: tv)
+                // Defer to avoid publishing during view updates
+                Task { @MainActor in
+                    self.appState.updateReachability(reachable, for: tv)
+                }
             }
             .store(in: &cancellables)
     }
@@ -342,16 +347,26 @@ class TVConnectionManager: ObservableObject {
     func readSlideshowStatus() async {
         do {
             let status = try await artService.fetchSlideshowStatus()
+            // Capture values before mutating to defer out of any view update cycle
+            var newInterval = currentSlideshowInterval
+            var newOrder = currentSlideshowOrder
             if let minutes = status.minutes,
                let interval = SlideshowInterval(rawValue: minutes) {
-                currentSlideshowInterval = interval
+                newInterval = interval
             }
             if status.isShuffle {
-                currentSlideshowOrder = .random
+                newOrder = .random
             } else if status.type == "slideshow" {
-                currentSlideshowOrder = .inOrder
+                newOrder = .inOrder
             }
-            print("📺 Slideshow synced: interval=\(currentSlideshowInterval.displayName) order=\(currentSlideshowOrder.displayName)")
+            // Defer mutations to avoid publishing during view updates
+            Task { @MainActor in
+                isSyncingSlideshow = true
+                currentSlideshowInterval = newInterval
+                currentSlideshowOrder = newOrder
+                isSyncingSlideshow = false
+                print("📺 Slideshow synced: interval=\(currentSlideshowInterval.displayName) order=\(currentSlideshowOrder.displayName)")
+            }
         } catch {
             print("📺 Slideshow read failed: \(error.localizedDescription)")
         }

@@ -94,6 +94,7 @@ struct ContentView: View {
                     .frame(width: 160)
                     .disabled(!isConnected)
                     .onChange(of: tvManager.currentSlideshowOrder) {
+                        guard !tvManager.isSyncingSlideshow else { return }
                         Task {
                             let success = await tvManager.setSlideshowOrder(tvManager.currentSlideshowOrder)
                             if success { showConfirmation("Order set to \(tvManager.currentSlideshowOrder.displayName)") }
@@ -109,6 +110,7 @@ struct ContentView: View {
                     .frame(width: 120)
                     .disabled(!isConnected)
                     .onChange(of: tvManager.currentSlideshowInterval) {
+                        guard !tvManager.isSyncingSlideshow else { return }
                         Task {
                             let success = await tvManager.setSlideshowInterval(tvManager.currentSlideshowInterval)
                             if success { showConfirmation("Interval set to \(tvManager.currentSlideshowInterval.displayName)") }
