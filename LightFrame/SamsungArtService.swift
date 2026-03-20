@@ -431,10 +431,9 @@ class SamsungArtService: ObservableObject {
         logHandler?("📡 Upload: all bytes sent (\(imageData.count) bytes) — waiting for image_added")
 
         // Step 6: Wait for image_added event
-        // Python: data = self.wait_for_response("image_added", timeout=timeout)
-        // image_added arrives as a d2d_service_message on the existing art channel.
-        // We don't send any new command — just register a pending wait keyed by event name.
-        let addedResponse = try await conn.waitForEvent("image_added", timeout: 60)
+        // Python: data = self.wait_for_response("image_added")
+        // Nick's code uses no timeout (waits indefinitely). We use 300s as a safety net.
+        let addedResponse = try await conn.waitForEvent("image_added", timeout: 300)
 
         tcpConnection.cancel()
 

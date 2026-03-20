@@ -276,36 +276,50 @@ class UploadEngine: ObservableObject, Identifiable {
         let fileType = photo.fileExtension.uppercased() == "PNG" ? "PNG" : "JPEG"
         print("📦 Uploading \(photo.filename): \(imageData.count / 1024)KB as \(fileType)")
 
-        // Upload to TV — TVConnectionManager handles matte fallback automatically
-        do {
-            let (contentID, confirmedMatte) = try await tvManager.uploadPhoto(
-                imageData: imageData,
-                fileType: fileType,
-                matte: photo.matte
-            )
-
-            // Record the upload in SyncStore so future scans know it's on the TV
-            syncStore.recordUpload(
-                filename: photo.filename,
-                tvContentID: contentID,
-                matte: confirmedMatte
-            )
-
-            // Update the photo in AppState so the grid dot turns green immediately
-            appState.setContentID(contentID, for: photo, in: item.collection)
-
-            // If the matte fell back, update model to match what the TV actually got
-            if confirmedMatte != photo.matte {
-                if let confirmed = confirmedMatte {
-                    appState.updateMatte(confirmed, for: photo, newData: nil)
+        // Upload to TV — TVConnectionManager handles matte fallback automatically.
+        // Auto-retry once on timeout (TV may be slow processing large files).
+        var lastError: Error?
+        for attempt in 1...2 {
+            do {
+                if attempt > 1 {
+                    print("🔄 Retrying \(photo.filename) (attempt \(attempt))")
                 }
+
+                let (contentID, confirmedMatte) = try await tvManager.uploadPhoto(
+                    imageData: imageData,
+                    fileType: fileType,
+                    matte: photo.matte
+                )
+
+                // Record the upload in SyncStore so future scans know it's on the TV
+                syncStore.recordUpload(
+                    filename: photo.filename,
+                    tvContentID: contentID,
+                    matte: confirmedMatte
+                )
+
+                // Update the photo in AppState so the grid dot turns green immediately
+                appState.setContentID(contentID, for: photo, in: item.collection)
+
+                // If the matte fell back, update model to match what the TV actually got
+                if confirmedMatte != photo.matte {
+                    if let confirmed = confirmedMatte {
+                        appState.updateMatte(confirmed, for: photo, newData: nil)
+                    }
+                }
+
+                items[index].state = .done
+                return
+
+            } catch {
+                lastError = error
+                // Only retry on timeout — other errors (rejected matte, etc.) won't benefit
+                let isTimeout = error.localizedDescription.contains("timed out")
+                if !isTimeout || attempt == 2 { break }
             }
-
-            items[index].state = .done
-
-        } catch {
-            items[index].state = .failed(error.localizedDescription)
         }
+
+        items[index].state = .failed(lastError?.localizedDescription ?? "Upload failed")
     }
 
     // MARK: - Duplicate Resolution Logic
@@ -325,9 +339,27 @@ class UploadEngine: ObservableObject, Identifiable {
     // MARK: - Load Image Data
     // Opens the collection's security-scoped bookmark to read the file.
     private func loadImageData(for photo: Photo, collection: Collection) -> Data? {
-        let (resolvedURL, accessGranted) = appState.resolveBookmark(for: collection)
+        var resolvedURL = collection.folderURL
+        var accessGranted = false
+
+        if let bookmarkData = collection.bookmarkData {
+            var isStale = false
+            if let url = try? URL(
+                resolvingBookmarkData: bookmarkData,
+                options: .withSecurityScope,
+                relativeTo: nil,
+                bookmarkDataIsStale: &isStale
+            ) {
+                resolvedURL = url
+                // Silently regenerate stale bookmarks without showing UI
+                if isStale {
+                    appState.refreshBookmark(for: collection, url: url)
+                }
+            }
+        }
+
+        accessGranted = resolvedURL.startAccessingSecurityScopedResource()
         defer { if accessGranted { resolvedURL.stopAccessingSecurityScopedResource() } }
-        guard accessGranted else { return nil }
 
         return try? Data(contentsOf: photo.url)
     }
