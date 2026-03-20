@@ -2,6 +2,21 @@ import Foundation
 import SwiftUI
 import Combine
 
+// MARK: - Sidebar Selection
+enum SidebarSelection: Hashable {
+    case photosOnTV
+    case allPhotos
+    case collection(UUID)
+}
+
+// MARK: - Sort Order
+enum SortOrder: String, CaseIterable {
+    case nameAsc            = "Name (A-Z)"
+    case nameDesc           = "Name (Z-A)"
+    case dateModifiedNewest = "Newest First"
+    case dateModifiedOldest = "Oldest First"
+}
+
 // MARK: - AppState
 // The single source of truth for the entire app.
 // Every view reads from and writes to this object.
@@ -36,17 +51,61 @@ class AppState: ObservableObject {
     @Published var selectedPhotoIDs: Set<UUID> = []
     @Published var lastTappedPhoto: Photo?
 
-    // MARK: - TV-Only Items
+    // MARK: - TV-Only Items (loaded from SyncStore for selected TV)
     @Published var tvOnlyItems: [TVOnlyItem] = []
     @Published var selectedTVOnlyItemIDs: Set<String> = []
     @Published var lastTappedTVOnlyItem: TVOnlyItem? = nil
 
+    // MARK: - Sidebar Selection & Sort
+    @Published var sidebarSelection: SidebarSelection = .allPhotos
+
+    /// Call this instead of setting sidebarSelection directly from view bindings.
+    /// Defers cascading mutations out of the SwiftUI view-update cycle.
+    func setSidebarSelection(_ selection: SidebarSelection) {
+        sidebarSelection = selection
+        Task { @MainActor in
+            clearSelection()
+            if case .photosOnTV = selection {
+                isFilterLocked = true
+                gridFilter = .onTV
+            } else {
+                isFilterLocked = false
+            }
+        }
+    }
+
+    @Published var sortOrder: SortOrder = {
+        let stored = UserDefaults.standard.string(forKey: "sortOrder")
+        return stored.flatMap { SortOrder(rawValue: $0) } ?? .nameAsc
+    }() {
+        didSet { UserDefaults.standard.set(sortOrder.rawValue, forKey: "sortOrder") }
+    }
+
+    @Published var isFilterLocked: Bool = false
+
     // MARK: - Grid Filter
     @Published var gridFilter: GridFilter = .all
+
+    // MARK: - Aspect Ratio Filter
+    @Published var aspectRatioFilter: AspectRatioFilter = .all
 
     // MARK: - Matte Filters
     @Published var activeStyleFilters: Set<MatteStyle> = []
     @Published var activeColorFilters: Set<MatteColor> = []
+
+    // MARK: - Cached SyncStore Count
+    // Cached count of photos on the selected TV (avoids SyncStore access during view body).
+    // Updated when: selectedTV changes, after TV scan, after upload/delete.
+    @Published var syncStorePhotoCount: Int = 0
+
+    func refreshSyncStorePhotoCount() {
+        guard let tv = selectedTV else {
+            syncStorePhotoCount = 0
+            return
+        }
+        let store = SyncStoreManager.shared.store(for: tv)
+        syncStorePhotoCount = store.records.count + store.tvOnlyItems.count
+    }
 
     // MARK: - Upload State
     @Published var isUploading: Bool = false
@@ -120,6 +179,7 @@ class AppState: ObservableObject {
         )
         collections.append(collection)
         selectedCollection = collection
+        setSidebarSelection(.collection(collection.id))
         save()
         // Auto-scan immediately so photos appear without a manual Scan press
         Task { await scanSelectedCollection() }
@@ -129,6 +189,10 @@ class AppState: ObservableObject {
         collections.removeAll { $0.id == collection.id }
         if selectedCollection?.id == collection.id {
             selectedCollection = collections.first
+        }
+        // If we were viewing this collection, switch to allPhotos
+        if case .collection(let id) = sidebarSelection, id == collection.id {
+            setSidebarSelection(.allPhotos)
         }
         save()
     }
@@ -269,7 +333,21 @@ class AppState: ObservableObject {
         collections[colIndex].photos[photoIndex].tvContentID = contentID
         collections[colIndex].photos[photoIndex].isOnTV = true
         if selectedCollection?.id == collection.id { selectedCollection = collections[colIndex] }
+        refreshSyncStorePhotoCount()
         save()
+    }
+
+    // MARK: - Load TV-Only Items from SyncStore
+    /// Loads tvOnlyItems from the selected TV's SyncStore into memory for display.
+    func loadTVOnlyItemsFromSyncStore() {
+        guard let tv = selectedTV else {
+            tvOnlyItems = []
+            syncStorePhotoCount = 0
+            return
+        }
+        let syncStore = SyncStoreManager.shared.store(for: tv)
+        tvOnlyItems = syncStore.tvOnlyItems
+        refreshSyncStorePhotoCount()
     }
 
     // MARK: - Photo Selection
@@ -359,8 +437,10 @@ class AppState: ObservableObject {
 
     func selectAll(photos: [Photo]) {
         selectedPhotoIDs = Set(photos.map { $0.id })
-        // Also select all TV-only items if on the On TV tab
-        if gridFilter == .onTV {
+        // Also select all TV-only items when viewing Photos on TV
+        if case .photosOnTV = sidebarSelection {
+            selectedTVOnlyItemIDs = Set(tvOnlyItems.map { $0.id })
+        } else if gridFilter == .onTV {
             selectedTVOnlyItemIDs = Set(tvOnlyItems.map { $0.id })
         }
     }
@@ -368,15 +448,48 @@ class AppState: ObservableObject {
     // MARK: - Filtered Photos
 
     var filteredPhotos: [Photo] {
-        guard let collection = selectedCollection else { return [] }
-        var photos = collection.photos
+        var photos: [Photo]
 
-        switch gridFilter {
-        case .all: break
-        case .onTV: photos = photos.filter { $0.isOnTV }
-        case .notOnTV: photos = photos.filter { !$0.isOnTV }
+        switch sidebarSelection {
+        case .photosOnTV:
+            // Show photos that are on the selected TV (from all collections)
+            guard selectedTV != nil else { return [] }
+            let syncStore: SyncStore? = selectedTV.map { SyncStoreManager.shared.store(for: $0) }
+            let uploadedFilenames = syncStore?.uploadedFilenames ?? []
+            photos = collections.flatMap { $0.photos }
+                .filter { uploadedFilenames.contains($0.filename) || $0.isOnTV }
+            // Deduplicate by filename (same file in multiple collections)
+            var seen = Set<String>()
+            photos = photos.filter { seen.insert($0.filename).inserted }
+
+        case .allPhotos:
+            // Merge all collections, deduplicate by filename
+            var seen = Set<String>()
+            photos = collections.flatMap { $0.photos }
+                .filter { seen.insert($0.filename).inserted }
+
+        case .collection(let id):
+            guard let collection = collections.first(where: { $0.id == id }) else { return [] }
+            photos = collection.photos
         }
 
+        // Apply grid filter (unless locked)
+        if !isFilterLocked {
+            switch gridFilter {
+            case .all: break
+            case .onTV: photos = photos.filter { $0.isOnTV }
+            case .notOnTV: photos = photos.filter { !$0.isOnTV }
+            }
+        }
+
+        // Apply aspect ratio filter
+        switch aspectRatioFilter {
+        case .all: break
+        case .is16x9: photos = photos.filter { $0.is16x9 }
+        case .other: photos = photos.filter { !$0.is16x9 }
+        }
+
+        // Apply matte style filter
         if !activeStyleFilters.isEmpty {
             photos = photos.filter { photo in
                 guard let matte = photo.matte else { return false }
@@ -384,6 +497,7 @@ class AppState: ObservableObject {
             }
         }
 
+        // Apply matte color filter
         if !activeColorFilters.isEmpty {
             photos = photos.filter { photo in
                 guard let color = photo.matte?.color else { return false }
@@ -391,18 +505,65 @@ class AppState: ObservableObject {
             }
         }
 
+        // Apply sort order
+        switch sortOrder {
+        case .nameAsc:
+            photos.sort { $0.filename.localizedStandardCompare($1.filename) == .orderedAscending }
+        case .nameDesc:
+            photos.sort { $0.filename.localizedStandardCompare($1.filename) == .orderedDescending }
+        case .dateModifiedNewest, .dateModifiedOldest:
+            // Pre-fetch all mod dates in one pass to avoid repeated filesystem calls
+            let dates = Dictionary(uniqueKeysWithValues: photos.map { ($0.id, Self.modDate($0.url)) })
+            let ascending = sortOrder == .dateModifiedOldest
+            photos.sort {
+                let d0 = dates[$0.id] ?? .distantPast
+                let d1 = dates[$1.id] ?? .distantPast
+                return ascending ? d0 < d1 : d0 > d1
+            }
+        }
+
         return photos
     }
 
+    private static func modDate(_ url: URL) -> Date {
+        (try? FileManager.default.attributesOfItem(atPath: url.path)[.modificationDate] as? Date) ?? .distantPast
+    }
+
     var selectedPhotos: [Photo] {
-        guard let collection = selectedCollection else { return [] }
+        guard let collection = selectedCollection else {
+            // For allPhotos/photosOnTV, search all collections
+            return collections.flatMap { $0.photos }.filter { selectedPhotoIDs.contains($0.id) }
+        }
         return collection.photos.filter { selectedPhotoIDs.contains($0.id) }
+    }
+
+    /// The name to display for the current sidebar selection
+    var currentSelectionName: String {
+        switch sidebarSelection {
+        case .photosOnTV: return "Photos on TV"
+        case .allPhotos: return "All Photos"
+        case .collection(let id):
+            return collections.first(where: { $0.id == id })?.name ?? "Collection"
+        }
+    }
+
+    /// Total photo count for the current sidebar selection (before filters)
+    var totalPhotoCount: Int {
+        switch sidebarSelection {
+        case .photosOnTV:
+            return syncStorePhotoCount
+        case .allPhotos:
+            var seen = Set<String>()
+            return collections.flatMap { $0.photos }.filter { seen.insert($0.filename).inserted }.count
+        case .collection(let id):
+            return collections.first(where: { $0.id == id })?.photos.count ?? 0
+        }
     }
 
     // MARK: - Persistence
 
     func save() {
-        let data = PersistencePayload(collections: collections, tvs: tvs, tvOnlyItems: tvOnlyItems)
+        let data = PersistencePayload(collections: collections, tvs: tvs)
         if let encoded = try? JSONEncoder().encode(data) {
             try? encoded.write(to: storageURL)
         }
@@ -412,35 +573,23 @@ class AppState: ObservableObject {
     }
 
     func load() {
-        guard let data = try? Data(contentsOf: storageURL),
-              let decoded = try? JSONDecoder().decode(PersistencePayload.self, from: data)
-        else { return }
+        guard let data = try? Data(contentsOf: storageURL) else { return }
 
-        collections = decoded.collections.map { collection in
-            var resolved = collection
-            if let bookmarkData = collection.bookmarkData {
-                var isStale = false
-                if let url = try? URL(
-                    resolvingBookmarkData: bookmarkData,
-                    options: .withSecurityScope,
-                    relativeTo: nil,
-                    bookmarkDataIsStale: &isStale
-                ) {
-                    resolved.folderURL = url
-                    if isStale {
-                        resolved.bookmarkData = try? url.bookmarkData(
-                            options: .withSecurityScope,
-                            includingResourceValuesForKeys: nil,
-                            relativeTo: nil
-                        )
-                    }
-                }
+        // Try new format first (without tvOnlyItems)
+        if let decoded = try? JSONDecoder().decode(PersistencePayload.self, from: data) {
+            loadCollections(decoded.collections)
+            tvs = decoded.tvs
+        } else if let decoded = try? JSONDecoder().decode(LegacyPersistencePayload.self, from: data) {
+            // Migration: old format had tvOnlyItems in AppState
+            loadCollections(decoded.collections)
+            tvs = decoded.tvs
+            // Migrate tvOnlyItems to SyncStore for the selected TV
+            if let items = decoded.tvOnlyItems, !items.isEmpty {
+                migrateTVOnlyItems(items)
             }
-            return resolved
+        } else {
+            return
         }
-
-        tvs = decoded.tvs
-        tvOnlyItems = decoded.tvOnlyItems ?? []
 
         // Restore last selected collection by persisted ID, fallback to first
         if let savedID = UserDefaults.standard.string(forKey: "selectedCollectionID"),
@@ -468,7 +617,56 @@ class AppState: ObservableObject {
             return t
         }
 
+        // Restore sidebar selection (direct assignment OK during load — no view is rendering yet)
+        if let collection = selectedCollection {
+            sidebarSelection = .collection(collection.id)
+        }
+
+        // Load TV-only items from SyncStore
+        loadTVOnlyItemsFromSyncStore()
+
+        // Cache the sync store count
+        refreshSyncStorePhotoCount()
+
         save()
+    }
+
+    private func loadCollections(_ rawCollections: [Collection]) {
+        collections = rawCollections.map { collection in
+            var resolved = collection
+            if let bookmarkData = collection.bookmarkData {
+                var isStale = false
+                if let url = try? URL(
+                    resolvingBookmarkData: bookmarkData,
+                    options: .withSecurityScope,
+                    relativeTo: nil,
+                    bookmarkDataIsStale: &isStale
+                ) {
+                    resolved.folderURL = url
+                    if isStale {
+                        resolved.bookmarkData = try? url.bookmarkData(
+                            options: .withSecurityScope,
+                            includingResourceValuesForKeys: nil,
+                            relativeTo: nil
+                        )
+                    }
+                }
+            }
+            return resolved
+        }
+    }
+
+    /// Migrate tvOnlyItems from the old PersistencePayload into the selected TV's SyncStore
+    private func migrateTVOnlyItems(_ items: [TVOnlyItem]) {
+        if let savedID = UserDefaults.standard.string(forKey: "selectedTVID"),
+           let uuid = UUID(uuidString: savedID),
+           let tv = tvs.first(where: { $0.id == uuid }) {
+            let syncStore = SyncStoreManager.shared.store(for: tv)
+            if syncStore.tvOnlyItems.isEmpty {
+                syncStore.setTVOnlyItems(items)
+                print("💾 Migrated \(items.count) tvOnlyItems to SyncStore for TV \(tv.name)")
+            }
+        }
     }
 }
 
@@ -501,9 +699,23 @@ enum GridFilter: String, CaseIterable {
     var displayName: String { rawValue }
 }
 
+// MARK: - Aspect Ratio Filter
+enum AspectRatioFilter: String, CaseIterable {
+    case all   = "All"
+    case is16x9 = "16:9"
+    case other  = "Other"
+    var displayName: String { rawValue }
+}
+
 // MARK: - Persistence Payload
 private struct PersistencePayload: Codable {
     var collections: [Collection]
     var tvs: [TV]
-    var tvOnlyItems: [TVOnlyItem]?  // Optional for backwards compatibility with existing files
+}
+
+// Legacy format — used for migration only
+private struct LegacyPersistencePayload: Codable {
+    var collections: [Collection]
+    var tvs: [TV]
+    var tvOnlyItems: [TVOnlyItem]?
 }

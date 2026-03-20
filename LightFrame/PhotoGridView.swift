@@ -30,49 +30,22 @@ struct PhotoGridView: View {
         ))]
     }
 
+    /// Whether to show TV-only items inline in the grid
+    private var showTVOnlyItems: Bool {
+        if case .photosOnTV = appState.sidebarSelection { return true }
+        if appState.gridFilter == .onTV { return true }
+        return false
+    }
+
     var body: some View {
         VStack(spacing: 0) {
 
-            // MARK: Tab Bar
-            HStack(spacing: 0) {
-                ForEach(GridFilter.allCases, id: \.self) { filter in
-                    Button {
-                        appState.gridFilter = filter
-                        appState.clearSelection()
-                    } label: {
-                        VStack(spacing: 0) {
-                            Text(filter.displayName)
-                                .font(.subheadline)
-                                .foregroundColor(
-                                    appState.gridFilter == filter ? .primary : .secondary
-                                )
-                                .padding(.vertical, 8)
-                                .padding(.horizontal, 16)
-
-                            Rectangle()
-                                .fill(appState.gridFilter == filter
-                                      ? Color.accentColor
-                                      : Color.clear)
-                                .frame(height: 2)
-                        }
-                    }
-                    .buttonStyle(.plain)
-                }
-                Spacer()
-                UploadControlsView(
-                    onUploadSelected: startUploadSelected,
-                    onUploadAll: startUploadAll,
-                    onDeleteSelected: confirmDeleteSelected,
-                    onScanTV: startScanTV
-                )
-                .padding(.trailing, 12)
+            if appState.isScanning {
+                PulsingDivider()
             }
-            .background(Color(NSColor.windowBackgroundColor))
-
-            Divider()
 
             // MARK: Empty State
-            if appState.filteredPhotos.isEmpty && appState.tvOnlyItems.isEmpty && !appState.isScanning {
+            if appState.filteredPhotos.isEmpty && (!showTVOnlyItems || appState.tvOnlyItems.isEmpty) && !appState.isScanning {
                 EmptyGridView()
             } else {
                 // MARK: Photo Grid
@@ -84,8 +57,8 @@ struct PhotoGridView: View {
                                 .contextMenu { photoContextMenu(for: photo) }
                         }
 
-                        // Show TV-only items (no local file) on the "On TV" tab
-                        if appState.gridFilter == .onTV {
+                        // Show TV-only items inline when appropriate
+                        if showTVOnlyItems {
                             ForEach(appState.tvOnlyItems) { item in
                                 TVOnlyThumbnailView(item: item, size: appState.thumbnailSize)
                                     .overlay(
@@ -101,35 +74,6 @@ struct PhotoGridView: View {
                     }
                     .padding(16)
                 }
-
-                // MARK: Bottom Status Bar + Thumbnail Slider
-                VStack(spacing: 0) {
-                    if appState.isScanning {
-                        PulsingDivider()
-                    } else {
-                        Divider()
-                    }
-
-                    HStack {
-                        Text(statusText)
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                        Spacer()
-                        HStack(spacing: 6) {
-                            Image(systemName: "photo")
-                                .font(.caption2)
-                                .foregroundColor(.secondary)
-                            Slider(value: $appState.thumbnailSize, in: 80...280)
-                                .frame(width: 100)
-                            Image(systemName: "photo")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                        }
-                    }
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 8)
-                    .background(Color(NSColor.windowBackgroundColor))
-                }
             }
         }
         // MARK: Upload Modal Sheet
@@ -138,6 +82,26 @@ struct PhotoGridView: View {
         .sheet(item: $uploadEngine) { engine in
             UploadModal(engine: engine) {
                 uploadEngine = nil
+            }
+        }
+        // MARK: Native Toolbar
+        .toolbar {
+            ToolbarItem(placement: .automatic) {
+                Picker("Sort", selection: $appState.sortOrder) {
+                    ForEach(SortOrder.allCases, id: \.self) { order in
+                        Text(order.rawValue).tag(order)
+                    }
+                }
+                .frame(width: 160)
+            }
+
+            ToolbarItem(placement: .primaryAction) {
+                UploadControlsView(
+                    onUploadSelected: startUploadSelected,
+                    onUploadAll: startUploadAll,
+                    onDeleteSelected: confirmDeleteSelected,
+                    onScanTV: startScanTV
+                )
             }
         }
         // Delete progress modal
@@ -171,6 +135,7 @@ struct PhotoGridView: View {
         .onKeyPress(.rightArrow) { navigateGrid(direction: .right); return .handled }
         .onKeyPress(.upArrow)    { navigateGrid(direction: .up);    return .handled }
         .onKeyPress(.downArrow)  { navigateGrid(direction: .down);  return .handled }
+        .onKeyPress(.escape)     { appState.clearSelection(); return .handled }
         .focusable(interactions: .activate)
         .focusEffectDisabled()
         // Delete confirmation alert
@@ -191,7 +156,7 @@ struct PhotoGridView: View {
 
     // MARK: - Start Upload: Selected Photos
     private func startUploadSelected() {
-        guard let collection = appState.selectedCollection,
+        guard let collection = currentCollection,
               tvManager.isConnected
         else { return }
 
@@ -203,7 +168,7 @@ struct PhotoGridView: View {
 
     // MARK: - Start Upload: All Photos
     private func startUploadAll() {
-        guard let collection = appState.selectedCollection,
+        guard let collection = currentCollection,
               tvManager.isConnected
         else { return }
 
@@ -211,6 +176,16 @@ struct PhotoGridView: View {
         guard !photosToUpload.isEmpty else { return }
 
         beginUpload(photos: photosToUpload, collection: collection)
+    }
+
+    /// Resolves the current collection based on sidebar selection
+    private var currentCollection: Collection? {
+        switch appState.sidebarSelection {
+        case .collection(let id):
+            return appState.collections.first(where: { $0.id == id })
+        default:
+            return appState.selectedCollection
+        }
     }
 
     // MARK: - Begin Upload Session
@@ -248,18 +223,6 @@ struct PhotoGridView: View {
                     }
                 }
         }
-    }
-
-    var statusText: String {
-        let total = appState.filteredPhotos.count
-        let onTV = appState.filteredPhotos.filter { $0.isOnTV }.count
-        let selected = appState.selectedPhotoIDs.count + appState.selectedTVOnlyItemIDs.count
-        let tvOnly = appState.gridFilter == .onTV ? appState.tvOnlyItems.count : 0
-        var parts = ["\(total) photo\(total == 1 ? "" : "s")"]
-        if onTV > 0 { parts.append("\(onTV) on TV") }
-        if tvOnly > 0 { parts.append("\(tvOnly) TV-only") }
-        if selected > 0 { parts.append("\(selected) selected") }
-        return parts.joined(separator: " · ")
     }
 
     private func handleTap(photo: Photo) {
@@ -466,9 +429,7 @@ struct PhotoGridView: View {
 
     // MARK: - Start Scan TV
     private func startScanTV() {
-        guard let tv = appState.selectedTV,
-              let collection = appState.selectedCollection
-        else { return }
+        guard let tv = appState.selectedTV else { return }
 
         let syncStore = SyncStoreManager.shared.store(for: tv)
 
@@ -483,7 +444,7 @@ struct PhotoGridView: View {
                 tvManager: tvManager,
                 appState: appState,
                 syncStore: syncStore,
-                collection: collection
+                collections: appState.collections
             )
             scanTVEngine = engine
             await engine.start()
@@ -534,7 +495,7 @@ struct PhotoThumbnailView: View {
 }
 
 // MARK: - TV-Only Thumbnail
-// Shows a TV-only item (no local file) with badges in the lower-right corner.
+// Shows a TV-only item (no local file) with dashed border and "TV" label badge.
 struct TVOnlyThumbnailView: View {
     let item: TVOnlyItem
     let size: CGFloat
@@ -569,18 +530,25 @@ struct TVOnlyThumbnailView: View {
                         .background(Color.orange.opacity(0.85))
                         .clipShape(RoundedRectangle(cornerRadius: 3))
                 }
-                // Cloud badge — TV-only
-                Image(systemName: "icloud.fill")
-                    .font(.caption2)
+                // "TV" label badge
+                Text("TV")
+                    .font(.system(size: 9, weight: .bold))
                     .foregroundColor(.white)
-                    .padding(3)
+                    .padding(.horizontal, 4)
+                    .padding(.vertical, 2)
                     .background(Color.blue.opacity(0.85))
                     .clipShape(RoundedRectangle(cornerRadius: 3))
             }
             .padding(4)
         }
         .frame(width: size, height: size * 9 / 16)
-        .shadow(color: .black.opacity(0.35), radius: 6, x: 0, y: 3)
+        // Dashed inset border for TV-only items
+        .overlay(
+            RoundedRectangle(cornerRadius: 3)
+                .strokeBorder(style: StrokeStyle(lineWidth: 1.5, dash: [6, 3]))
+                .foregroundColor(.blue.opacity(0.5))
+                .padding(2)
+        )
     }
 }
 
@@ -594,18 +562,46 @@ struct EmptyGridView: View {
                 .font(.system(size: 48))
                 .foregroundColor(.secondary)
 
-            if appState.selectedCollection == nil {
-                Text("No collection selected")
-                    .foregroundColor(.secondary)
-                Text("Add a folder in the sidebar to get started.")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-            } else {
-                Text("No photos found")
-                    .foregroundColor(.secondary)
-                Text("Add JPEG or PNG files to \(appState.selectedCollection!.name).")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
+            switch appState.sidebarSelection {
+            case .photosOnTV:
+                if appState.selectedTV == nil {
+                    Text("No TV selected")
+                        .foregroundColor(.secondary)
+                    Text("Select a TV in the sidebar to see its photos.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                } else {
+                    Text("No photos on TV")
+                        .foregroundColor(.secondary)
+                    Text("Scan TV to see what's on it, or upload photos from a collection.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+            case .allPhotos:
+                if appState.collections.isEmpty {
+                    Text("No collections yet")
+                        .foregroundColor(.secondary)
+                    Text("Add a folder in the sidebar to get started.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                } else {
+                    Text("No photos found")
+                        .foregroundColor(.secondary)
+                }
+            case .collection:
+                if appState.selectedCollection == nil {
+                    Text("No collection selected")
+                        .foregroundColor(.secondary)
+                    Text("Add a folder in the sidebar to get started.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                } else {
+                    Text("No photos found")
+                        .foregroundColor(.secondary)
+                    Text("Add JPEG or PNG files to \(appState.selectedCollection!.name).")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -614,9 +610,6 @@ struct EmptyGridView: View {
 
 // MARK: - Upload Controls
 // The Scan / Upload / Delete buttons in the grid toolbar.
-// Adapts based on the active grid filter:
-//   - "On TV" tab: shows Scan TV + Remove, hides upload buttons
-//   - Other tabs: shows Scan Folder + Upload + Remove
 struct UploadControlsView: View {
     @EnvironmentObject var appState: AppState
     @EnvironmentObject var tvManager: TVConnectionManager
@@ -632,7 +625,10 @@ struct UploadControlsView: View {
 
     var hasSelection: Bool { !appState.selectedPhotoIDs.isEmpty }
 
-    var isOnTVTab: Bool { appState.gridFilter == .onTV }
+    var isPhotosOnTV: Bool {
+        if case .photosOnTV = appState.sidebarSelection { return true }
+        return false
+    }
 
     // Count of photos not yet on the TV (what "Upload All" will act on)
     var notOnTVCount: Int {
@@ -646,20 +642,20 @@ struct UploadControlsView: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            if isOnTVTab {
-                // On TV tab — scan the TV, not the folder
-                Button("Scan TV") {
-                    onScanTV()
-                }
-                .disabled(!isConnected || appState.isScanning)
-            } else {
-                // All / Not on TV tabs — scan the local folder
+            // Scan TV button — always available when a TV is selected
+            Button("Scan TV") {
+                onScanTV()
+            }
+            .disabled(!isConnected || appState.isScanning || appState.selectedTV == nil)
+
+            if !isPhotosOnTV {
+                // Scan folder
                 Button("Scan Folder") {
                     Task { await appState.scanSelectedCollection() }
                 }
                 .disabled(appState.selectedCollection == nil || appState.isScanning)
 
-                // Upload buttons only on non-"On TV" tabs
+                // Upload buttons
                 if hasSelection {
                     Button("Upload Selected (\(appState.selectedPhotoIDs.count))") {
                         onUploadSelected()
@@ -675,7 +671,7 @@ struct UploadControlsView: View {
                 }
             }
 
-            // "Remove from TV" shows on any tab when selected photos are on the TV
+            // "Remove from TV" shows when selected photos are on the TV
             if selectedOnTVCount > 0 {
                 Button(role: .destructive) {
                     onDeleteSelected()
@@ -808,14 +804,14 @@ class DeleteEngine: ObservableObject, Identifiable {
 
             do {
                 try await tvManager.deletePhotos(contentIDs: [item.id])
+                syncStore.removeTVOnlyItem(contentID: item.id)
                 appState.tvOnlyItems.removeAll { $0.id == item.id }
-                appState.save()
                 completedCount += 1
             } catch {
                 let errMsg = error.localizedDescription
                 if errMsg.contains("-10") {
+                    syncStore.removeTVOnlyItem(contentID: item.id)
                     appState.tvOnlyItems.removeAll { $0.id == item.id }
-                    appState.save()
                     completedCount += 1
                 } else {
                     failedCount += 1
@@ -945,13 +941,13 @@ class ScanTVEngine: ObservableObject, Identifiable {
     private let tvManager: TVConnectionManager
     private let appState: AppState
     private let syncStore: SyncStore
-    private let collection: Collection
+    private let collections: [Collection]
 
-    init(tvManager: TVConnectionManager, appState: AppState, syncStore: SyncStore, collection: Collection) {
+    init(tvManager: TVConnectionManager, appState: AppState, syncStore: SyncStore, collections: [Collection]) {
         self.tvManager = tvManager
         self.appState = appState
         self.syncStore = syncStore
-        self.collection = collection
+        self.collections = collections
     }
 
     func start() async {
@@ -969,16 +965,25 @@ class ScanTVEngine: ObservableObject, Identifiable {
                 tvItemByID[item.id] = item
             }
 
-            // Reconcile local photos with TV state
+            // Reconcile local photos across ALL collections with TV state
             var matched = 0
+            let allPhotos = collections.flatMap { $0.photos }
 
-            for photo in collection.photos {
+            for photo in allPhotos {
+                guard let collection = collections.first(where: { col in
+                    col.photos.contains(where: { $0.id == photo.id })
+                }) else { continue }
+
                 if let knownID = photo.tvContentID {
                     if tvContentIDs.contains(knownID) {
                         if !photo.isOnTV {
                             var p = photo
                             p.isOnTV = true
                             appState.updatePhotoInPlace(p, in: collection)
+                        }
+                        // Update SyncStore record with source tracking
+                        if syncStore.records[photo.filename] == nil {
+                            syncStore.recordUpload(filename: photo.filename, tvContentID: knownID, matte: photo.matte)
                         }
                         matched += 1
                     } else {
@@ -1006,7 +1011,7 @@ class ScanTVEngine: ObservableObject, Identifiable {
             matchedCount = matched
 
             // Find TV-only items (not matched to any local file)
-            let knownContentIDs = Set(collection.photos.compactMap { $0.tvContentID })
+            let knownContentIDs = Set(allPhotos.compactMap { $0.tvContentID })
             let syncContentIDs = Set(syncStore.records.values.map { $0.tvContentID })
             let allKnown = knownContentIDs.union(syncContentIDs)
             let unmatchedIDs = Array(tvContentIDs.subtracting(allKnown))
@@ -1041,12 +1046,16 @@ class ScanTVEngine: ObservableObject, Identifiable {
                     ))
                 }
 
+                // Write to SyncStore (persisted per-TV)
+                syncStore.setTVOnlyItems(tvOnlyItems)
                 appState.tvOnlyItems = tvOnlyItems
-                appState.save()
             } else {
+                syncStore.setTVOnlyItems([])
                 appState.tvOnlyItems = []
-                appState.save()
             }
+
+            // Mark full sync complete
+            syncStore.markFullSync()
 
             statusMessage = "Scan complete"
             print("📺 TV Scan: \(tvPhotoCount) on TV, \(matched) matched, \(unmatchedIDs.count) TV-only")

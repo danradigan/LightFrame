@@ -51,25 +51,30 @@ struct LightFrameApp: App {
                 .keyboardShortcut("w", modifiers: .command)
             }
 
-            // MARK: View Menu
-            CommandMenu("View") {
-                Button("All Photos") {
-                    appState.gridFilter = .all
-                    appState.clearSelection()
+            // MARK: View Menu (insert into the built-in View menu, not a second one)
+            CommandGroup(after: .toolbar) {
+                Divider()
+
+                Button("Photos on TV") {
+                    if appState.selectedTV != nil {
+                        appState.setSidebarSelection(.photosOnTV)
+                    }
                 }
                 .keyboardShortcut("1", modifiers: .command)
+                .disabled(appState.selectedTV == nil)
 
-                Button("On TV") {
-                    appState.gridFilter = .onTV
-                    appState.clearSelection()
+                Button("All Photos") {
+                    appState.setSidebarSelection(.allPhotos)
                 }
                 .keyboardShortcut("2", modifiers: .command)
 
-                Button("Not on TV") {
-                    appState.gridFilter = .notOnTV
-                    appState.clearSelection()
+                if let firstCollection = appState.collections.first {
+                    Button(firstCollection.name) {
+                        appState.setSidebarSelection(.collection(firstCollection.id))
+                        appState.selectedCollection = firstCollection
+                    }
+                    .keyboardShortcut("3", modifiers: .command)
                 }
-                .keyboardShortcut("3", modifiers: .command)
 
                 Divider()
 
@@ -114,7 +119,7 @@ struct LightFrameApp: App {
                 Button("Scan Folder") {
                     Task { await appState.scanSelectedCollection() }
                 }
-                .keyboardShortcut("s", modifiers: [.command, .shift])
+                .keyboardShortcut("f", modifiers: [.command, .shift])
                 .disabled(appState.selectedCollection == nil || appState.isScanning)
 
                 Divider()
