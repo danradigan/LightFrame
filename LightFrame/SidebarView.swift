@@ -152,7 +152,7 @@ struct SidebarView: View {
                     }
                 }
 
-                // Matte style filter — 2-column swatch grid
+                // Matte style filter — 2-column swatch grid + None button
                 VStack(alignment: .leading, spacing: 6) {
                     Text("Style")
                         .font(.caption)
@@ -166,17 +166,21 @@ struct SidebarView: View {
                                     appState.activeStyleFilters.insert(style)
                                 }
                             } label: {
-                                ZStack {
-                                    FilterStyleSwatch(style: style)
-                                    if appState.activeStyleFilters.contains(style) {
-                                        RoundedRectangle(cornerRadius: 3)
-                                            .stroke(Color.accentColor, lineWidth: 2)
-                                        Image(systemName: "checkmark")
-                                            .font(.caption2.bold())
-                                            .foregroundColor(.white)
-                                            .shadow(color: .black, radius: 2)
+                                GeometryReader { geo in
+                                    let tileWidth = geo.size.width
+                                    ZStack {
+                                        MatteStyleIcon(style: style, size: tileWidth)
+                                        if appState.activeStyleFilters.contains(style) {
+                                            RoundedRectangle(cornerRadius: 3)
+                                                .stroke(Color.accentColor, lineWidth: 2)
+                                            Image(systemName: "checkmark")
+                                                .font(.caption2.bold())
+                                                .foregroundColor(.white)
+                                                .shadow(color: .black, radius: 2)
+                                        }
                                     }
                                 }
+                                .aspectRatio(16.0/9.0, contentMode: .fit)
                             }
                             .buttonStyle(.plain)
                             .help(style.displayName)
@@ -278,40 +282,6 @@ struct SidebarView: View {
         return appState.collections.flatMap { $0.photos }
             .filter { seen.insert($0.filename).inserted }
             .count
-    }
-}
-
-// MARK: - FilterStyleSwatch
-// Dark-mode friendly matte style swatch for the sidebar filter grid.
-// Uses neutral colors that adapt to light/dark mode instead of a fixed warm color.
-struct FilterStyleSwatch: View {
-    let style: MatteStyle
-
-    var body: some View {
-        let insets = MatteInsets.forStyle(style)
-
-        GeometryReader { geo in
-            let size = geo.size
-            let innerW = max(0, size.width * (1 - insets.leftFraction - insets.rightFraction))
-            let innerH = max(0, size.height * (1 - insets.topFraction - insets.bottomFraction))
-
-            ZStack {
-                // Matte area — adapts to dark/light mode
-                RoundedRectangle(cornerRadius: 3)
-                    .fill(Color(NSColor.unemphasizedSelectedContentBackgroundColor))
-
-                // Inner "photo" area
-                RoundedRectangle(cornerRadius: 1)
-                    .fill(Color(NSColor.controlBackgroundColor).opacity(0.85))
-                    .frame(width: innerW, height: innerH)
-                    .shadow(
-                        color: style == .shadowbox ? Color.black.opacity(0.6) : Color.clear,
-                        radius: style == .shadowbox ? 3 : 0
-                    )
-            }
-        }
-        .aspectRatio(16.0/9.0, contentMode: .fit)
-        .clipShape(RoundedRectangle(cornerRadius: 3))
     }
 }
 

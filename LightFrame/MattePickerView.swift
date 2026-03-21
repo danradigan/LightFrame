@@ -58,55 +58,22 @@ struct MattePickerView: View {
 }
 
 // MARK: - StyleTile
-// Visual tile that shows a miniature preview of the matte proportions.
-// A tiny 16:9 rectangle with the matte insets drawn at the correct ratios
-// so the user can see the difference between panoramic, modern, flexible, etc.
+// Wrapper around MatteStyleIcon that adds selection state and label.
 private struct StyleTile: View {
     let style: MatteStyle
     let matteColor: MatteColor
     let isSelected: Bool
     let onTap: () -> Void
 
-    // Tile dimensions — 16:9 mini preview inside a labeled card
     private let tileWidth: CGFloat = 72
-    private var tileHeight: CGFloat { tileWidth * 9 / 16 }
 
     var body: some View {
         VStack(spacing: 4) {
-            // Mini 16:9 preview showing matte proportions
-            ZStack {
-                if style == .none {
-                    // "None" shows the photo filling the entire area
+            MatteStyleIcon(style: style, matteColor: matteColor, size: tileWidth)
+                .overlay(
                     RoundedRectangle(cornerRadius: 2)
-                        .fill(Color(NSColor.controlBackgroundColor).opacity(0.85))
-                        .frame(width: tileWidth, height: tileHeight)
-                } else {
-                    // Matte color background
-                    RoundedRectangle(cornerRadius: 2)
-                        .fill(matteColor.previewColor)
-                        .frame(width: tileWidth, height: tileHeight)
-
-                    // Photo area inset — dark fill for clear contrast against matte
-                    let insets = MatteInsets.forStyle(style)
-                    let innerW = tileWidth * (1 - insets.leftFraction - insets.rightFraction)
-                    let innerH = tileHeight * (1 - insets.topFraction - insets.bottomFraction)
-
-                    RoundedRectangle(cornerRadius: 1)
-                        .fill(Color(NSColor.controlBackgroundColor).opacity(0.85))
-                        .frame(width: innerW, height: innerH)
-                        .shadow(color: .black.opacity(0.3), radius: 1, x: 0, y: 0.5)
-
-                    // Thin white inner bevel line
-                    RoundedRectangle(cornerRadius: 1)
-                        .stroke(Color.white.opacity(0.8), lineWidth: 0.5)
-                        .frame(width: innerW, height: innerH)
-                }
-            }
-            .frame(width: tileWidth, height: tileHeight)
-            .overlay(
-                RoundedRectangle(cornerRadius: 2)
-                    .stroke(isSelected ? Color.accentColor : Color.clear, lineWidth: 2)
-            )
+                        .stroke(isSelected ? Color.accentColor : Color.clear, lineWidth: 2)
+                )
 
             Text(style.displayName)
                 .font(.system(size: 9))
