@@ -124,7 +124,7 @@ struct SidebarView: View {
                 // TV status filter
                 VStack(alignment: .leading, spacing: 6) {
                     Text("TV Status")
-                        .font(.caption)
+                        .font(.subheadline)
                         .foregroundColor(.secondary)
                     Picker("", selection: $appState.gridFilter) {
                         ForEach(GridFilter.allCases, id: \.self) { filter in
@@ -138,7 +138,7 @@ struct SidebarView: View {
                 // Aspect ratio filter
                 VStack(alignment: .leading, spacing: 6) {
                     Text("Aspect Ratio")
-                        .font(.caption)
+                        .font(.subheadline)
                         .foregroundColor(.secondary)
                     HStack {
                         Picker("", selection: $appState.aspectRatioFilter) {
@@ -152,12 +152,12 @@ struct SidebarView: View {
                     }
                 }
 
-                // Matte style filter — 2-column swatch grid + None button
+                // Matte style filter — 3x2 grid + full-width None button
                 VStack(alignment: .leading, spacing: 6) {
                     Text("Style")
-                        .font(.caption)
+                        .font(.subheadline)
                         .foregroundColor(.secondary)
-                    LazyVGrid(columns: [GridItem(.flexible(), spacing: 6), GridItem(.flexible(), spacing: 6)], spacing: 6) {
+                    LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 6), count: 3), spacing: 6) {
                         ForEach(MatteStyle.allCases.filter { $0 != .none }, id: \.self) { style in
                             Button {
                                 if appState.activeStyleFilters.contains(style) {
@@ -173,10 +173,6 @@ struct SidebarView: View {
                                         if appState.activeStyleFilters.contains(style) {
                                             RoundedRectangle(cornerRadius: 3)
                                                 .stroke(Color.accentColor, lineWidth: 2)
-                                            Image(systemName: "checkmark")
-                                                .font(.caption2.bold())
-                                                .foregroundColor(.white)
-                                                .shadow(color: .black, radius: 2)
                                         }
                                     }
                                 }
@@ -187,7 +183,7 @@ struct SidebarView: View {
                         }
                     }
 
-                    // "None" button spanning full width
+                    // None — full-width button below the grid
                     Button {
                         if appState.activeStyleFilters.contains(.none) {
                             appState.activeStyleFilters.remove(.none)
@@ -195,21 +191,21 @@ struct SidebarView: View {
                             appState.activeStyleFilters.insert(.none)
                         }
                     } label: {
-                        HStack {
-                            Text("None")
-                                .font(.caption)
-                            if appState.activeStyleFilters.contains(.none) {
-                                Spacer()
-                                Image(systemName: "checkmark")
-                                    .font(.caption2)
-                            }
-                        }
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 4)
-                        .background(
-                            RoundedRectangle(cornerRadius: 4)
-                                .stroke(appState.activeStyleFilters.contains(.none) ? Color.accentColor : Color.primary.opacity(0.2), lineWidth: appState.activeStyleFilters.contains(.none) ? 2 : 0.5)
-                        )
+                        Text("None")
+                            .font(.system(size: 11))
+                            .foregroundColor(.primary)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 4)
+                            .background(
+                                RoundedRectangle(cornerRadius: 4)
+                                    .fill(appState.activeStyleFilters.contains(.none) ? Color.accentColor.opacity(0.15) : Color.clear)
+                            )
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 4)
+                                    .stroke(appState.activeStyleFilters.contains(.none) ? Color.accentColor : Color.primary.opacity(0.2),
+                                            lineWidth: appState.activeStyleFilters.contains(.none) ? 2 : 0.5)
+                            )
+                            .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
                 }
@@ -217,7 +213,7 @@ struct SidebarView: View {
                 // Matte color filter — 4-column rectangle swatch grid
                 VStack(alignment: .leading, spacing: 6) {
                     Text("Color")
-                        .font(.caption)
+                        .font(.subheadline)
                         .foregroundColor(.secondary)
                     LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 6), count: 4), spacing: 6) {
                         ForEach(MatteColor.allCases, id: \.self) { color in
@@ -228,21 +224,14 @@ struct SidebarView: View {
                                     appState.activeColorFilters.insert(color)
                                 }
                             } label: {
-                                ZStack {
-                                    RoundedRectangle(cornerRadius: 4)
-                                        .fill(color.previewColor)
-                                        .frame(height: 28)
-                                        .overlay(
-                                            RoundedRectangle(cornerRadius: 4)
-                                                .stroke(Color.primary.opacity(0.2), lineWidth: 0.5)
-                                        )
-                                    if appState.activeColorFilters.contains(color) {
-                                        Image(systemName: "checkmark")
-                                            .font(.caption2.bold())
-                                            .foregroundColor(.white)
-                                            .shadow(radius: 1)
-                                    }
-                                }
+                                RoundedRectangle(cornerRadius: 4)
+                                    .fill(color.previewColor)
+                                    .frame(height: 28)
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: 4)
+                                            .stroke(appState.activeColorFilters.contains(color) ? Color.accentColor : Color.primary.opacity(0.2),
+                                                    lineWidth: appState.activeColorFilters.contains(color) ? 2 : 0.5)
+                                    )
                             }
                             .buttonStyle(.plain)
                             .help(color.displayName)

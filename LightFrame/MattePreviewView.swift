@@ -69,7 +69,7 @@ struct MattePreviewView: View {
         .frame(width: size, height: height)
         .drawingGroup()
         .clipShape(RoundedRectangle(cornerRadius: 4))
-        .shadow(color: .black.opacity(0.30), radius: 5, x: 0, y: 2)
+        .shadow(color: .black.opacity(0.28), radius: 5, x: 0, y: 2)
     }
 }
 
@@ -150,10 +150,9 @@ struct MatteInsets {
 // Handles the matte + bevel rendering with style-specific proportions.
 //
 // The Samsung Frame TV behaves differently depending on style:
-//   - Cropping styles (panoramic, modern, modernThin, modernWide):
-//     The image is cropped to FILL the matte window. Panoramic cuts a wide
-//     horizontal strip from the center; modern crops to fill its smaller window.
-//   - Fitting styles (flexible, shadowbox):
+//   - Cropping styles (panoramic, modern, modernThin, modernWide, flexible):
+//     The image is cropped to FILL the matte window.
+//   - Fitting styles (shadowbox):
 //     The full image is scaled to FIT inside the matte window with the matte
 //     color visible in any remaining space.
 struct PhotoMatteView: View {
@@ -177,8 +176,6 @@ struct PhotoMatteView: View {
     }
 
     // Styles that crop the image to fill the matte window.
-    // Flexible and modern thin both crop — flexible has less border, modern thin more.
-    // Only shadowbox is a fit style (full photo visible).
     private var cropsFill: Bool {
         switch matteStyle {
         case .panoramic, .modern, .modernWide, .modernThin, .flexible:
@@ -193,11 +190,9 @@ struct PhotoMatteView: View {
     // fitting styles.
     var photoRect: CGRect {
         if cropsFill {
-            // Image fills the entire inner window — bevel goes around the window edge
             return CGRect(origin: innerOrigin, size: innerSize)
         }
 
-        // Fitting styles: compute the actual image rect after aspect-fit
         guard let image = image else {
             return CGRect(origin: innerOrigin, size: innerSize)
         }
@@ -223,9 +218,8 @@ struct PhotoMatteView: View {
     }
 
     // Bevel width scales proportionally with the view size.
-    // A real mat board bevel is clearly visible — not a hairline.
     private var bevelWidth: CGFloat {
-        max(2, outerSize.width * 0.012)
+        max(1.5, outerSize.width * 0.008)
     }
 
     // Offset to center the inner area within the outer frame
@@ -238,29 +232,25 @@ struct PhotoMatteView: View {
 
     var body: some View {
         ZStack {
+            // Shadowbox overlay drawn BEHIND the photo so shadow falls on matte
+            if matteStyle == .shadowbox {
+                ShadowboxOverlay(outerSize: outerSize, photoRect: photoRect)
+            }
+
             if let image = image {
-                let shadowStyle = matteStyle == .shadowbox
                 if cropsFill {
-                    // Crop to fill: image fills the matte window, excess is clipped
                     Image(nsImage: image)
                         .resizable()
                         .aspectRatio(contentMode: .fill)
                         .frame(width: innerSize.width, height: innerSize.height)
                         .clipped()
-                        .shadow(color: shadowStyle ? .black.opacity(0.7) : .clear,
-                                radius: shadowStyle ? max(4, outerSize.width * 0.018) : 0,
-                                x: 0, y: 0)
                         .frame(width: outerSize.width, height: outerSize.height, alignment: .center)
                         .offset(innerOffset)
                 } else {
-                    // Scale to fit: full image visible, matte color fills gaps
                     Image(nsImage: image)
                         .resizable()
                         .aspectRatio(contentMode: .fit)
                         .frame(width: innerSize.width, height: innerSize.height)
-                        .shadow(color: shadowStyle ? .black.opacity(0.7) : .clear,
-                                radius: shadowStyle ? max(4, outerSize.width * 0.018) : 0,
-                                x: 0, y: 0)
                         .frame(width: outerSize.width, height: outerSize.height, alignment: .center)
                         .offset(innerOffset)
                 }
@@ -299,8 +289,7 @@ struct PhotoMatteView: View {
 
 // MARK: - Shadowbox Overlay
 // The shadowbox effect: photo floats ABOVE the matte surface, casting a
-// drop shadow DOWN onto the matte beneath it. This is NOT an inset/recessed
-// effect — the shadow falls outside the photo rect onto the matte.
+// drop shadow DOWN and to the RIGHT onto the matte beneath it.
 struct ShadowboxOverlay: View {
     let outerSize: CGSize
     let photoRect: CGRect
@@ -308,12 +297,10 @@ struct ShadowboxOverlay: View {
     var body: some View {
         Canvas { context, _ in
             let r = photoRect
-            let offsetX: CGFloat = max(1.5, outerSize.width * 0.005)
-            let offsetY: CGFloat = max(3, outerSize.width * 0.01)
+            let offsetX: CGFloat = max(1.5, outerSize.width * 0.006)
+            let offsetY: CGFloat = max(3, outerSize.width * 0.012)
             let blur: CGFloat = max(4, outerSize.width * 0.015)
 
-            // Drop shadow: dark rect offset down/right behind the photo,
-            // blurred so it falls onto the matte surface beneath.
             let shadowRect = r.offsetBy(dx: offsetX, dy: offsetY)
             let shadowPath = Path(shadowRect)
 
@@ -331,6 +318,8 @@ struct ShadowboxOverlay: View {
 // On a real mat, the bevel is a solid warm cream/white strip visible on
 // all four sides — brighter on top/left (catches light), slightly darker
 // on bottom/right (in shadow), but always clearly visible as a distinct band.
+// A hairline at the inner edge where bevel meets the photo defines the sharpest
+// transition on a real mat cut.
 struct BevelOverlay: View {
     let outerSize: CGSize
     let photoRect: CGRect
@@ -341,14 +330,14 @@ struct BevelOverlay: View {
             let r = photoRect
             let b = max(1.5, bevelWidth)
 
-            // Paper core — near-white so it contrasts against light mattes too
+            // Paper core colors
             let coreLight = Color.white
-            let coreShadow = Color(white: 0.88)
+            let coreShadow = Color(white: 0.85)
 
-            // Outer edge line — thin dark line where bevel meets the matte surface.
-            // This is what makes the bevel visible even on antique/polar/warm.
-            let edgeThickness: CGFloat = max(0.5, b * 0.3)
-            let outerEdge = Color.black.opacity(0.15)
+            // Outer edge line — thin dark line where bevel meets the matte surface
+            let edgeThickness: CGFloat = max(0.5, b * 0.25)
+            let outerEdge = Color.black.opacity(0.12)
+            let outerEdgeShadow = Color.black.opacity(0.18)
 
             // Draw outer edge lines first (behind the bevel)
             // Top outer edge
@@ -359,12 +348,12 @@ struct BevelOverlay: View {
                          with: .color(outerEdge))
             // Bottom outer edge
             context.fill(Path(CGRect(x: r.minX - b, y: r.maxY + b - edgeThickness, width: r.width + 2 * b, height: edgeThickness)),
-                         with: .color(Color.black.opacity(0.20)))
+                         with: .color(outerEdgeShadow))
             // Right outer edge
             context.fill(Path(CGRect(x: r.maxX + b - edgeThickness, y: r.minY - b, width: edgeThickness, height: r.height + 2 * b)),
-                         with: .color(Color.black.opacity(0.20)))
+                         with: .color(outerEdgeShadow))
 
-            // Top bevel — bright paper core
+            // Top bevel — bright paper core (catches light from above)
             var topPath = Path()
             topPath.move(to: CGPoint(x: r.minX - b, y: r.minY - b))
             topPath.addLine(to: CGPoint(x: r.maxX + b, y: r.minY - b))
@@ -373,7 +362,7 @@ struct BevelOverlay: View {
             topPath.closeSubpath()
             context.fill(topPath, with: .color(coreLight.opacity(0.95)))
 
-            // Left bevel — bright paper core
+            // Left bevel — bright paper core (catches light from left)
             var leftPath = Path()
             leftPath.move(to: CGPoint(x: r.minX - b, y: r.minY - b))
             leftPath.addLine(to: CGPoint(x: r.minX, y: r.minY))
@@ -399,6 +388,12 @@ struct BevelOverlay: View {
             rightPath.addLine(to: CGPoint(x: r.maxX, y: r.maxY))
             rightPath.closeSubpath()
             context.fill(rightPath, with: .color(coreShadow))
+
+            // Inner hairline — the sharpest edge on a real mat cut, where bevel meets photo
+            let hairline: CGFloat = 0.5
+            let innerRect = CGRect(x: r.minX, y: r.minY, width: r.width, height: r.height)
+            context.stroke(Path(innerRect), with: .color(Color.black.opacity(0.15)),
+                           style: StrokeStyle(lineWidth: hairline))
         }
         .frame(width: outerSize.width, height: outerSize.height)
         .allowsHitTesting(false)
@@ -429,7 +424,7 @@ struct PhotoImageView: View {
                     .overlay(
                         ProgressView()
                             .scaleEffect(0.5)
-                            .tint(.white)
+                            .tint(.gray)
                     )
             }
         }
