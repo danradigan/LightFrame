@@ -17,6 +17,7 @@ struct TVRowView: View {
     @State private var isRenaming = false
     @State private var renameName = ""
     @State private var showProtocolTests = false
+    @State private var showConnectionDiag = false
 
     var isSelected: Bool { appState.selectedTV?.id == tv.id }
 
@@ -54,6 +55,9 @@ struct TVRowView: View {
             Button("Protocol Tests...") {
                 showProtocolTests = true
             }
+            Button("Connection Diagnostics...") {
+                showConnectionDiag = true
+            }
             Divider()
             Button("Remove", role: .destructive) {
                 appState.removeTV(tv)
@@ -61,6 +65,9 @@ struct TVRowView: View {
         }
         .sheet(isPresented: $showProtocolTests) {
             ProtocolTestSheet(tv: tv, artService: tvManager.artService)
+        }
+        .sheet(isPresented: $showConnectionDiag) {
+            ConnectionDiagnosticSheet(ipAddress: tv.ipAddress)
         }
         .alert("Rename TV", isPresented: $isRenaming) {
             TextField("Name", text: $renameName)

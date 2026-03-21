@@ -17,6 +17,7 @@ struct AddTVSheet: View {
 
     @State private var name: String = ""
     @State private var ipAddress: String = ""
+    @State private var showConnectionDiag = false
     @StateObject private var discovery = TVDiscovery()
 
     var canSave: Bool { !name.isEmpty && !ipAddress.isEmpty }
@@ -126,6 +127,10 @@ struct AddTVSheet: View {
             HStack {
                 Button("Cancel") { dismiss() }
                 Spacer()
+                Button("Diagnose Connection...") {
+                    showConnectionDiag = true
+                }
+                .disabled(ipAddress.isEmpty)
                 Button("Add TV") {
                     appState.addTV(name: name, ipAddress: ipAddress)
                     dismiss()
@@ -136,5 +141,8 @@ struct AddTVSheet: View {
             .padding(24)
         }
         .frame(width: 380, height: 500)
+        .sheet(isPresented: $showConnectionDiag) {
+            ConnectionDiagnosticSheet(ipAddress: ipAddress)
+        }
     }
 }

@@ -21,7 +21,7 @@ class SamsungArtService: ObservableObject {
     @Published var lastError: String?
 
     // MARK: - Connection
-    private var connection: SamsungConnection?
+    private var connection: (any ArtConnectionProtocol)?
     private let sslDelegate = SSLBypassDelegate()
 
     // MARK: - Configuration
@@ -35,6 +35,13 @@ class SamsungArtService: ObservableObject {
     // MARK: - Init
 
     init() {}
+
+    /// Test-only init: inject a mock connection conforming to ArtConnectionProtocol.
+    /// Sets state to .connected so fetch/command methods work immediately.
+    init(testConnection: any ArtConnectionProtocol) {
+        self.connection = testConnection
+        self.connectionState = .connected
+    }
 
     // MARK: - Configure & Connect
     //
@@ -90,7 +97,7 @@ class SamsungArtService: ObservableObject {
     func fetchArtList(category: String? = nil) async throws -> [TVArtItem] {
         let conn = try requireConnection()
         let params = SamsungArtProtocol.getContentList(category: category)
-        let inner = try await conn.sendCommand(params, timeout: 10)
+        let inner = try await conn.sendCommand(params, waitForEvent: nil, timeout: 10)
 
         guard let list = SamsungArtParser.parseContentList(from: inner) else {
             return []
@@ -118,7 +125,7 @@ class SamsungArtService: ObservableObject {
     func fetchCurrentArtwork() async throws -> SamsungArtParser.InnerMessage {
         let conn = try requireConnection()
         let params = SamsungArtProtocol.getCurrentArtwork()
-        return try await conn.sendCommand(params)
+        return try await conn.sendCommand(params, waitForEvent: nil, timeout: 5)
     }
 
     // MARK: - Select Image
@@ -128,7 +135,7 @@ class SamsungArtService: ObservableObject {
     func selectImage(contentID: String, category: String? = nil, show: Bool = true) async throws {
         let conn = try requireConnection()
         let params = SamsungArtProtocol.selectImage(contentID: contentID, category: category, show: show)
-        _ = try await conn.sendCommand(params)
+        _ = try await conn.sendCommand(params, waitForEvent: nil, timeout: 5)
     }
 
     // MARK: - Delete
@@ -139,7 +146,7 @@ class SamsungArtService: ObservableObject {
     func deleteArt(contentIDs: [String]) async throws {
         let conn = try requireConnection()
         let params = SamsungArtProtocol.deleteImageList(contentIDs: contentIDs)
-        let inner = try await conn.sendCommand(params, timeout: 10)
+        let inner = try await conn.sendCommand(params, waitForEvent: nil, timeout: 10)
 
         // Python: return content_id_list == json.loads(data['content_id_list'])
         // We log a warning if the response doesn't match, but don't fail.
@@ -164,7 +171,7 @@ class SamsungArtService: ObservableObject {
     func changeMatte(contentID: String, matteID: String, portraitMatteID: String? = nil) async throws {
         let conn = try requireConnection()
         let params = SamsungArtProtocol.changeMatte(contentID: contentID, matteID: matteID, portraitMatteID: portraitMatteID)
-        _ = try await conn.sendCommand(params, timeout: 15)
+        _ = try await conn.sendCommand(params, waitForEvent: nil, timeout: 15)
     }
 
     // Send change_matte with specific fields only — used by TVConnectionManager to
@@ -178,7 +185,7 @@ class SamsungArtService: ObservableObject {
         for (key, value) in extraParams {
             params[key] = value
         }
-        _ = try await conn.sendCommand(params, timeout: 15)
+        _ = try await conn.sendCommand(params, waitForEvent: nil, timeout: 15)
     }
 
     // MARK: - Slideshow
@@ -188,14 +195,14 @@ class SamsungArtService: ObservableObject {
     func setSlideshowStatus(durationMinutes: Int, shuffle: Bool) async throws {
         let conn = try requireConnection()
         let params = SamsungArtProtocol.setSlideshowStatus(durationMinutes: durationMinutes, shuffle: shuffle)
-        _ = try await conn.sendCommand(params)
+        _ = try await conn.sendCommand(params, waitForEvent: nil, timeout: 5)
     }
 
     // Python: get_slideshow_status()
     func fetchSlideshowStatus() async throws -> SlideshowStatus {
         let conn = try requireConnection()
         let params = SamsungArtProtocol.getSlideshowStatus()
-        let inner = try await conn.sendCommand(params)
+        let inner = try await conn.sendCommand(params, waitForEvent: nil, timeout: 5)
 
         let value = inner.raw["value"] as? String ?? "off"
         let type = inner.raw["type"] as? String ?? ""
@@ -211,7 +218,7 @@ class SamsungArtService: ObservableObject {
     func fetchArtmodeStatus() async throws -> Bool {
         let conn = try requireConnection()
         let params = SamsungArtProtocol.getArtmodeStatus()
-        let inner = try await conn.sendCommand(params)
+        let inner = try await conn.sendCommand(params, waitForEvent: nil, timeout: 5)
         return (inner.raw["value"] as? String) == "on"
     }
 
@@ -222,10 +229,10 @@ class SamsungArtService: ObservableObject {
     func fetchAPIVersion() async throws -> String {
         let conn = try requireConnection()
         do {
-            let inner = try await conn.sendCommand(SamsungArtProtocol.getAPIVersion(useNewAPI: true))
+            let inner = try await conn.sendCommand(SamsungArtProtocol.getAPIVersion(useNewAPI: true), waitForEvent: nil, timeout: 5)
             return inner.raw["version"] as? String ?? "unknown"
         } catch {
-            let inner = try await conn.sendCommand(SamsungArtProtocol.getAPIVersion(useNewAPI: false))
+            let inner = try await conn.sendCommand(SamsungArtProtocol.getAPIVersion(useNewAPI: false), waitForEvent: nil, timeout: 5)
             return inner.raw["version"] as? String ?? "unknown"
         }
     }
@@ -237,7 +244,7 @@ class SamsungArtService: ObservableObject {
     func fetchDeviceInfo() async throws -> [String: Any] {
         let conn = try requireConnection()
         let params = SamsungArtProtocol.getDeviceInfo()
-        let inner = try await conn.sendCommand(params)
+        let inner = try await conn.sendCommand(params, waitForEvent: nil, timeout: 5)
         return inner.raw
     }
 
@@ -248,7 +255,7 @@ class SamsungArtService: ObservableObject {
     func fetchMatteList() async throws -> (styles: [[String: Any]], colors: [[String: Any]]?) {
         let conn = try requireConnection()
         let params = SamsungArtProtocol.getMatteList()
-        let inner = try await conn.sendCommand(params)
+        let inner = try await conn.sendCommand(params, waitForEvent: nil, timeout: 5)
 
         let styles: [[String: Any]]
         if let str = inner.raw["matte_type_list"] as? String,
@@ -284,7 +291,7 @@ class SamsungArtService: ObservableObject {
 
         // Build and send the command
         let (thumbParams, _) = SamsungArtProtocol.getThumbnailList(contentIDs: contentIDs)
-        let inner = try await conn.sendCommand(thumbParams, timeout: 30)
+        let inner = try await conn.sendCommand(thumbParams, waitForEvent: nil, timeout: 30)
 
         // Parse conn_info
         guard let connInfo = SamsungArtParser.parseConnInfo(from: inner) else {
@@ -379,7 +386,7 @@ class SamsungArtService: ObservableObject {
 
         // Python: wait_for_event="ready_to_use"
         // We wait for the UUID match, which should be the ready_to_use response
-        let readyResponse = try await conn.sendCommand(sendParams, timeout: 30)
+        let readyResponse = try await conn.sendCommand(sendParams, waitForEvent: nil, timeout: 30)
 
         try Task.checkCancellation()
 
@@ -411,7 +418,7 @@ class SamsungArtService: ObservableObject {
 
         // Python: art_socket.send(len(header).to_bytes(4, "big"))
         let lengthPrefix = withUnsafeBytes(of: UInt32(headerBytes.count).bigEndian) { Data($0) }
-        try await conn.tcpSend(connection: tcpConnection, data: lengthPrefix + headerBytes)
+        try await conn.tcpSend(connection: tcpConnection, data: lengthPrefix + headerBytes, isComplete: false)
 
         logHandler?("📡 Upload header sent (\(headerBytes.count) bytes)")
 
@@ -554,9 +561,132 @@ class SamsungArtService: ObservableObject {
         "thumbnail_one"
     ]
 
+    // MARK: - TV Diagnostic Report
+    //
+    // Generates a structured JSON report capturing TV capabilities and behavior.
+    // Designed to be shared across different model years for comparison.
+    //
+    // Usage: run from ProtocolTestSheet, copy the JSON, paste into a
+    // conversation with Claude for cross-model analysis.
+    //
+    func generateDiagnosticReport() async -> [String: Any] {
+        var report: [String: Any] = [
+            "report_version": 1,
+            "generated_at": ISO8601DateFormatter().string(from: Date()),
+            "client": "LightFrame",
+            "host": host,
+            "port": port
+        ]
+
+        // API Version
+        let apiStart = Date()
+        do {
+            let version = try await fetchAPIVersion()
+            report["api_version"] = version
+            report["api_version_time_ms"] = Int(Date().timeIntervalSince(apiStart) * 1000)
+        } catch {
+            report["api_version"] = "error: \(error.localizedDescription)"
+        }
+
+        // Device Info
+        let devStart = Date()
+        do {
+            let info = try await fetchDeviceInfo()
+            // Extract safe fields (no tokens or sensitive data)
+            var safeInfo: [String: String] = [:]
+            for key in ["FrameTVSupport", "GameModeSupport", "TokenAuthSupport",
+                        "device_name", "model_name", "resolution", "countryCode"] {
+                if let val = info[key] as? String { safeInfo[key] = val }
+            }
+            report["device_info"] = safeInfo
+            report["device_info_all_keys"] = info.keys.sorted()
+            report["device_info_time_ms"] = Int(Date().timeIntervalSince(devStart) * 1000)
+        } catch {
+            report["device_info"] = "error: \(error.localizedDescription)"
+        }
+
+        // Art Mode Status
+        do {
+            let artMode = try await fetchArtmodeStatus()
+            report["artmode_status"] = artMode ? "on" : "off"
+        } catch {
+            report["artmode_status"] = "error: \(error.localizedDescription)"
+        }
+
+        // Content List — capture structure, not actual content
+        let listStart = Date()
+        do {
+            let items = try await fetchArtList()
+            let userCount = items.filter { $0.isUserPhoto }.count
+            let builtInCount = items.filter { $0.isBuiltIn }.count
+            let categories = Set(items.map { $0.categoryID }).sorted()
+
+            report["content_list"] = [
+                "total_items": items.count,
+                "user_photos": userCount,
+                "built_in": builtInCount,
+                "categories": categories,
+                "sample_fields": items.first.map { item -> [String: String] in
+                    var fields: [String: String] = [:]
+                    fields["has_content_id"] = "true"
+                    fields["has_category_id"] = item.categoryID.isEmpty ? "false" : "true"
+                    fields["has_matte_id"] = item.matteID != nil ? "true" : "false"
+                    fields["has_portrait_matte_id"] = item.portraitMatteID != nil ? "true" : "false"
+                    fields["has_width"] = item.width != nil ? "true" : "false"
+                    fields["has_height"] = item.height != nil ? "true" : "false"
+                    fields["has_file_size"] = item.fileSize != nil ? "true" : "false"
+                    fields["has_image_date"] = item.imageDate != nil ? "true" : "false"
+                    return fields
+                } ?? [:]
+            ]
+            report["content_list_time_ms"] = Int(Date().timeIntervalSince(listStart) * 1000)
+        } catch {
+            report["content_list"] = "error: \(error.localizedDescription)"
+        }
+
+        // Matte List — capture what the TV supports
+        do {
+            let (styles, colors) = try await fetchMatteList()
+            report["matte_support"] = [
+                "styles": styles.compactMap { $0["matte_type"] as? String },
+                "colors": colors?.compactMap { $0["color"] as? String } ?? [],
+                "style_count": styles.count,
+                "color_count": colors?.count ?? 0
+            ]
+        } catch {
+            report["matte_support"] = "error: \(error.localizedDescription)"
+        }
+
+        // Slideshow Status
+        do {
+            let status = try await fetchSlideshowStatus()
+            report["slideshow"] = [
+                "value": status.value,
+                "type": status.type,
+                "category_id": status.categoryID ?? "nil"
+            ]
+        } catch {
+            report["slideshow"] = "error: \(error.localizedDescription)"
+        }
+
+        // Current Artwork
+        do {
+            let current = try await fetchCurrentArtwork()
+            var currentInfo: [String: String] = [:]
+            for key in ["content_id", "matte_id", "portrait_matte_id", "category_id"] {
+                if let val = current.raw[key] as? String { currentInfo[key] = val }
+            }
+            report["current_artwork"] = currentInfo
+        } catch {
+            report["current_artwork"] = "error: \(error.localizedDescription)"
+        }
+
+        return report
+    }
+
     // MARK: - Private Helpers
 
-    private func requireConnection() throws -> SamsungConnection {
+    private func requireConnection() throws -> any ArtConnectionProtocol {
         guard let conn = connection else {
             throw SamsungArtError.notConnected
         }

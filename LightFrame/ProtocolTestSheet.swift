@@ -41,6 +41,12 @@ struct ProtocolTestSheet: View {
                 }
                 .disabled(runner.isRunning)
 
+                Button("Diagnostics") {
+                    runner.runDiagnostics(artService: artService, tv: tv)
+                }
+                .disabled(runner.isRunning)
+                .help("Generate a JSON diagnostic report and copy to clipboard")
+
                 Button("Close") { dismiss() }
             }
             .padding()
@@ -262,6 +268,38 @@ class TestRunner: ObservableObject {
 
             self.isRunning = false
             self.logLines.append("── Tests complete ──")
+        }
+    }
+
+    func runDiagnostics(artService: SamsungArtService, tv: TV) {
+        guard !isRunning else { return }
+        isRunning = true
+        logLines.append("── Running TV Diagnostics ──")
+
+        runTask = Task { [weak self] in
+            guard let self else { return }
+
+            let report = await artService.generateDiagnosticReport()
+
+            // Serialize to pretty JSON
+            if let jsonData = try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]),
+               let jsonString = String(data: jsonData, encoding: .utf8) {
+
+                // Copy to clipboard
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(jsonString, forType: .string)
+
+                self.logLines.append("── Diagnostic Report (copied to clipboard) ──")
+                // Show report in log
+                for line in jsonString.components(separatedBy: "\n") {
+                    self.logLines.append(line)
+                }
+                self.logLines.append("── Report copied to clipboard ──")
+            } else {
+                self.logLines.append("❌ Failed to serialize diagnostic report")
+            }
+
+            self.isRunning = false
         }
     }
 

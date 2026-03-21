@@ -6,8 +6,19 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXContainerItemProxy section */
+		CC001A0A2F65C2C500688BA3 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 37901D092F65C2C200688BA3 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 37901D102F65C2C200688BA3;
+			remoteInfo = LightFrame;
+		};
+/* End PBXContainerItemProxy section */
+
 /* Begin PBXFileReference section */
 		37901D112F65C2C200688BA3 /* LightFrame.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = LightFrame.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		CC001A012F65C2C500688BA3 /* LightFrameTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = LightFrameTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -16,10 +27,22 @@
 			path = LightFrame;
 			sourceTree = "<group>";
 		};
+		CC001A022F65C2C500688BA3 /* LightFrameTests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = LightFrameTests;
+			sourceTree = "<group>";
+		};
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
 		37901D0E2F65C2C200688BA3 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		CC001A042F65C2C500688BA3 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -33,6 +56,7 @@
 			isa = PBXGroup;
 			children = (
 				37901D132F65C2C200688BA3 /* LightFrame */,
+				CC001A022F65C2C500688BA3 /* LightFrameTests */,
 				37901D122F65C2C200688BA3 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -41,6 +65,7 @@
 			isa = PBXGroup;
 			children = (
 				37901D112F65C2C200688BA3 /* LightFrame.app */,
+				CC001A012F65C2C500688BA3 /* LightFrameTests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -70,6 +95,27 @@
 			productReference = 37901D112F65C2C200688BA3 /* LightFrame.app */;
 			productType = "com.apple.product-type.application";
 		};
+		CC001A062F65C2C500688BA3 /* LightFrameTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = CC001A092F65C2C500688BA3 /* Build configuration list for PBXNativeTarget "LightFrameTests" */;
+			buildPhases = (
+				CC001A032F65C2C500688BA3 /* Sources */,
+				CC001A042F65C2C500688BA3 /* Frameworks */,
+				CC001A052F65C2C500688BA3 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				CC001A0B2F65C2C500688BA3 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				CC001A022F65C2C500688BA3 /* LightFrameTests */,
+			);
+			name = LightFrameTests;
+			productName = LightFrameTests;
+			productReference = CC001A012F65C2C500688BA3 /* LightFrameTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -82,6 +128,10 @@
 				TargetAttributes = {
 					37901D102F65C2C200688BA3 = {
 						CreatedOnToolsVersion = 26.3;
+					};
+					CC001A062F65C2C500688BA3 = {
+						CreatedOnToolsVersion = 26.3;
+						TestTargetID = 37901D102F65C2C200688BA3;
 					};
 				};
 			};
@@ -100,12 +150,20 @@
 			projectRoot = "";
 			targets = (
 				37901D102F65C2C200688BA3 /* LightFrame */,
+				CC001A062F65C2C500688BA3 /* LightFrameTests */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
 		37901D0F2F65C2C200688BA3 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		CC001A052F65C2C500688BA3 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -122,7 +180,22 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		CC001A032F65C2C500688BA3 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		CC001A0B2F65C2C500688BA3 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 37901D102F65C2C200688BA3 /* LightFrame */;
+			targetProxy = CC001A0A2F65C2C500688BA3 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
 		37901D1A2F65C2C400688BA3 /* Debug */ = {
@@ -353,6 +426,52 @@
 			};
 			name = Release;
 		};
+		CC001A072F65C2C500688BA3 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = MTQB3JEXCK;
+				GENERATE_INFOPLIST_FILE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 26.2;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.dashedyellowline.LightFrameTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SUPPORTED_PLATFORMS = macosx;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/LightFrame.app/Contents/MacOS/LightFrame";
+			};
+			name = Debug;
+		};
+		CC001A082F65C2C500688BA3 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = MTQB3JEXCK;
+				GENERATE_INFOPLIST_FILE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 26.2;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.dashedyellowline.LightFrameTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SUPPORTED_PLATFORMS = macosx;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/LightFrame.app/Contents/MacOS/LightFrame";
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -370,6 +489,15 @@
 			buildConfigurations = (
 				37901D1D2F65C2C400688BA3 /* Debug */,
 				37901D1E2F65C2C400688BA3 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		CC001A092F65C2C500688BA3 /* Build configuration list for PBXNativeTarget "LightFrameTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				CC001A072F65C2C500688BA3 /* Debug */,
+				CC001A082F65C2C500688BA3 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

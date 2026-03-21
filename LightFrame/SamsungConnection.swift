@@ -19,7 +19,7 @@ import Network
 // This class is NOT @MainActor — it does network I/O.
 // Callers (SamsungArtService) bridge to MainActor as needed.
 //
-actor SamsungConnection {
+actor SamsungConnection: ArtConnectionProtocol {
 
     // MARK: - Configuration
     let host: String
