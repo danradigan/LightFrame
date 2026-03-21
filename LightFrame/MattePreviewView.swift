@@ -67,8 +67,9 @@ struct MattePreviewView: View {
             }
         }
         .frame(width: size, height: height)
-        .clipShape(RoundedRectangle(cornerRadius: 3))
-        .shadow(color: .black.opacity(0.35), radius: 6, x: 0, y: 3)
+        .drawingGroup()
+        .clipShape(RoundedRectangle(cornerRadius: 4))
+        .shadow(color: .black.opacity(0.30), radius: 5, x: 0, y: 2)
     }
 }
 
@@ -175,12 +176,14 @@ struct PhotoMatteView: View {
         insets.innerOrigin(outerSize)
     }
 
-    // Styles that crop the image to fill the matte window
+    // Styles that crop the image to fill the matte window.
+    // Flexible and modern thin both crop — flexible has less border, modern thin more.
+    // Only shadowbox is a fit style (full photo visible).
     private var cropsFill: Bool {
         switch matteStyle {
-        case .panoramic, .modern, .modernThin, .modernWide:
+        case .panoramic, .modern, .modernWide, .modernThin, .flexible:
             return true
-        case .flexible, .shadowbox, .none:
+        case .shadowbox, .none:
             return false
         }
     }
@@ -219,10 +222,10 @@ struct PhotoMatteView: View {
         return CGRect(x: xOffset, y: yOffset, width: photoWidth, height: photoHeight)
     }
 
-    // Bevel width scales with the view size but has reasonable bounds
+    // Bevel width scales proportionally with the view size.
+    // A real mat board bevel is clearly visible — not a hairline.
     private var bevelWidth: CGFloat {
-        let base = min(outerSize.width, outerSize.height) * 0.006
-        return max(1.5, min(base, 4))
+        max(2, outerSize.width * 0.012)
     }
 
     // Offset to center the inner area within the outer frame
@@ -236,6 +239,7 @@ struct PhotoMatteView: View {
     var body: some View {
         ZStack {
             if let image = image {
+                let shadowStyle = matteStyle == .shadowbox
                 if cropsFill {
                     // Crop to fill: image fills the matte window, excess is clipped
                     Image(nsImage: image)
@@ -243,6 +247,9 @@ struct PhotoMatteView: View {
                         .aspectRatio(contentMode: .fill)
                         .frame(width: innerSize.width, height: innerSize.height)
                         .clipped()
+                        .shadow(color: shadowStyle ? .black.opacity(0.7) : .clear,
+                                radius: shadowStyle ? max(4, outerSize.width * 0.018) : 0,
+                                x: 0, y: 0)
                         .frame(width: outerSize.width, height: outerSize.height, alignment: .center)
                         .offset(innerOffset)
                 } else {
@@ -251,14 +258,16 @@ struct PhotoMatteView: View {
                         .resizable()
                         .aspectRatio(contentMode: .fit)
                         .frame(width: innerSize.width, height: innerSize.height)
+                        .shadow(color: shadowStyle ? .black.opacity(0.7) : .clear,
+                                radius: shadowStyle ? max(4, outerSize.width * 0.018) : 0,
+                                x: 0, y: 0)
                         .frame(width: outerSize.width, height: outerSize.height, alignment: .center)
                         .offset(innerOffset)
                 }
             }
 
-            if matteStyle == .shadowbox {
-                ShadowboxOverlay(outerSize: outerSize, photoRect: photoRect)
-            } else {
+            // Bevel overlay for styles with mat board cut (not shadowbox, not none)
+            if matteStyle != .shadowbox && matteStyle != .none {
                 BevelOverlay(outerSize: outerSize, photoRect: photoRect, bevelWidth: bevelWidth)
             }
         }
@@ -289,8 +298,9 @@ struct PhotoMatteView: View {
 }
 
 // MARK: - Shadowbox Overlay
-// The shadowbox style uses a subtle drop shadow inside the matte rather than
-// the raised bevel that other styles use. This gives a recessed "floating" look.
+// The shadowbox effect: photo floats ABOVE the matte surface, casting a
+// drop shadow DOWN onto the matte beneath it. This is NOT an inset/recessed
+// effect — the shadow falls outside the photo rect onto the matte.
 struct ShadowboxOverlay: View {
     let outerSize: CGSize
     let photoRect: CGRect
@@ -298,44 +308,18 @@ struct ShadowboxOverlay: View {
     var body: some View {
         Canvas { context, _ in
             let r = photoRect
-            let shadowDepth: CGFloat = max(2, outerSize.width * 0.005)
+            let offsetX: CGFloat = max(1.5, outerSize.width * 0.005)
+            let offsetY: CGFloat = max(3, outerSize.width * 0.01)
+            let blur: CGFloat = max(4, outerSize.width * 0.015)
 
-            // Inner shadow on all four edges — darker on bottom/right (light from top-left)
-            // Top edge shadow
-            var topShadow = Path()
-            topShadow.addRect(CGRect(x: r.minX, y: r.minY, width: r.width, height: shadowDepth))
-            context.fill(topShadow, with: .linearGradient(
-                Gradient(colors: [Color.black.opacity(0.25), Color.clear]),
-                startPoint: CGPoint(x: r.midX, y: r.minY),
-                endPoint: CGPoint(x: r.midX, y: r.minY + shadowDepth)
-            ))
+            // Drop shadow: dark rect offset down/right behind the photo,
+            // blurred so it falls onto the matte surface beneath.
+            let shadowRect = r.offsetBy(dx: offsetX, dy: offsetY)
+            let shadowPath = Path(shadowRect)
 
-            // Left edge shadow
-            var leftShadow = Path()
-            leftShadow.addRect(CGRect(x: r.minX, y: r.minY, width: shadowDepth, height: r.height))
-            context.fill(leftShadow, with: .linearGradient(
-                Gradient(colors: [Color.black.opacity(0.20), Color.clear]),
-                startPoint: CGPoint(x: r.minX, y: r.midY),
-                endPoint: CGPoint(x: r.minX + shadowDepth, y: r.midY)
-            ))
-
-            // Bottom edge shadow (deeper)
-            var bottomShadow = Path()
-            bottomShadow.addRect(CGRect(x: r.minX, y: r.maxY - shadowDepth, width: r.width, height: shadowDepth))
-            context.fill(bottomShadow, with: .linearGradient(
-                Gradient(colors: [Color.clear, Color.black.opacity(0.35)]),
-                startPoint: CGPoint(x: r.midX, y: r.maxY - shadowDepth),
-                endPoint: CGPoint(x: r.midX, y: r.maxY)
-            ))
-
-            // Right edge shadow (deeper)
-            var rightShadow = Path()
-            rightShadow.addRect(CGRect(x: r.maxX - shadowDepth, y: r.minY, width: shadowDepth, height: r.height))
-            context.fill(rightShadow, with: .linearGradient(
-                Gradient(colors: [Color.clear, Color.black.opacity(0.30)]),
-                startPoint: CGPoint(x: r.maxX - shadowDepth, y: r.midY),
-                endPoint: CGPoint(x: r.maxX, y: r.midY)
-            ))
+            var shadowCtx = context
+            shadowCtx.addFilter(.blur(radius: blur))
+            shadowCtx.fill(shadowPath, with: .color(Color.black.opacity(0.45)))
         }
         .frame(width: outerSize.width, height: outerSize.height)
         .allowsHitTesting(false)
@@ -343,10 +327,10 @@ struct ShadowboxOverlay: View {
 }
 
 // MARK: - Bevel Overlay
-// Renders a realistic angled mat board bevel around the photo.
-// Trapezoidal faces with gradients simulate a 45° cut mat board:
-//   - Top/left faces are bright (light source above-left)
-//   - Bottom/right faces are in shadow
+// Renders the exposed paper core of a 45° mat board cut around the photo.
+// On a real mat, the bevel is a solid warm cream/white strip visible on
+// all four sides — brighter on top/left (catches light), slightly darker
+// on bottom/right (in shadow), but always clearly visible as a distinct band.
 struct BevelOverlay: View {
     let outerSize: CGSize
     let photoRect: CGRect
@@ -355,59 +339,66 @@ struct BevelOverlay: View {
     var body: some View {
         Canvas { context, _ in
             let r = photoRect
-            let b = bevelWidth
+            let b = max(1.5, bevelWidth)
 
-            // Top bevel — catches light, bright gradient
+            // Paper core — near-white so it contrasts against light mattes too
+            let coreLight = Color.white
+            let coreShadow = Color(white: 0.88)
+
+            // Outer edge line — thin dark line where bevel meets the matte surface.
+            // This is what makes the bevel visible even on antique/polar/warm.
+            let edgeThickness: CGFloat = max(0.5, b * 0.3)
+            let outerEdge = Color.black.opacity(0.15)
+
+            // Draw outer edge lines first (behind the bevel)
+            // Top outer edge
+            context.fill(Path(CGRect(x: r.minX - b, y: r.minY - b, width: r.width + 2 * b, height: edgeThickness)),
+                         with: .color(outerEdge))
+            // Left outer edge
+            context.fill(Path(CGRect(x: r.minX - b, y: r.minY - b, width: edgeThickness, height: r.height + 2 * b)),
+                         with: .color(outerEdge))
+            // Bottom outer edge
+            context.fill(Path(CGRect(x: r.minX - b, y: r.maxY + b - edgeThickness, width: r.width + 2 * b, height: edgeThickness)),
+                         with: .color(Color.black.opacity(0.20)))
+            // Right outer edge
+            context.fill(Path(CGRect(x: r.maxX + b - edgeThickness, y: r.minY - b, width: edgeThickness, height: r.height + 2 * b)),
+                         with: .color(Color.black.opacity(0.20)))
+
+            // Top bevel — bright paper core
             var topPath = Path()
             topPath.move(to: CGPoint(x: r.minX - b, y: r.minY - b))
             topPath.addLine(to: CGPoint(x: r.maxX + b, y: r.minY - b))
             topPath.addLine(to: CGPoint(x: r.maxX, y: r.minY))
             topPath.addLine(to: CGPoint(x: r.minX, y: r.minY))
             topPath.closeSubpath()
-            context.fill(topPath, with: .linearGradient(
-                Gradient(colors: [Color.black.opacity(0.04), Color.white.opacity(0.85)]),
-                startPoint: CGPoint(x: r.minX, y: r.minY - b),
-                endPoint: CGPoint(x: r.minX, y: r.minY)
-            ))
+            context.fill(topPath, with: .color(coreLight.opacity(0.95)))
 
-            // Left bevel — catches light, bright gradient
+            // Left bevel — bright paper core
             var leftPath = Path()
             leftPath.move(to: CGPoint(x: r.minX - b, y: r.minY - b))
             leftPath.addLine(to: CGPoint(x: r.minX, y: r.minY))
             leftPath.addLine(to: CGPoint(x: r.minX, y: r.maxY))
             leftPath.addLine(to: CGPoint(x: r.minX - b, y: r.maxY + b))
             leftPath.closeSubpath()
-            context.fill(leftPath, with: .linearGradient(
-                Gradient(colors: [Color.black.opacity(0.04), Color.white.opacity(0.75)]),
-                startPoint: CGPoint(x: r.minX - b, y: r.minY),
-                endPoint: CGPoint(x: r.minX, y: r.minY)
-            ))
+            context.fill(leftPath, with: .color(coreLight.opacity(0.90)))
 
-            // Bottom bevel — in shadow, dark gradient
+            // Bottom bevel — shadowed paper core
             var bottomPath = Path()
             bottomPath.move(to: CGPoint(x: r.minX, y: r.maxY))
             bottomPath.addLine(to: CGPoint(x: r.maxX, y: r.maxY))
             bottomPath.addLine(to: CGPoint(x: r.maxX + b, y: r.maxY + b))
             bottomPath.addLine(to: CGPoint(x: r.minX - b, y: r.maxY + b))
             bottomPath.closeSubpath()
-            context.fill(bottomPath, with: .linearGradient(
-                Gradient(colors: [Color.white.opacity(0.35), Color.black.opacity(0.10)]),
-                startPoint: CGPoint(x: r.minX, y: r.maxY),
-                endPoint: CGPoint(x: r.minX, y: r.maxY + b)
-            ))
+            context.fill(bottomPath, with: .color(coreShadow))
 
-            // Right bevel — in shadow, dark gradient
+            // Right bevel — shadowed paper core
             var rightPath = Path()
             rightPath.move(to: CGPoint(x: r.maxX, y: r.minY))
             rightPath.addLine(to: CGPoint(x: r.maxX + b, y: r.minY - b))
             rightPath.addLine(to: CGPoint(x: r.maxX + b, y: r.maxY + b))
             rightPath.addLine(to: CGPoint(x: r.maxX, y: r.maxY))
             rightPath.closeSubpath()
-            context.fill(rightPath, with: .linearGradient(
-                Gradient(colors: [Color.white.opacity(0.35), Color.black.opacity(0.10)]),
-                startPoint: CGPoint(x: r.maxX, y: r.minY),
-                endPoint: CGPoint(x: r.maxX + b, y: r.minY)
-            ))
+            context.fill(rightPath, with: .color(coreShadow))
         }
         .frame(width: outerSize.width, height: outerSize.height)
         .allowsHitTesting(false)
