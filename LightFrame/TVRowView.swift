@@ -36,9 +36,12 @@ struct TVRowView: View {
                 .fill(tv.isReachable ? Color.green : Color.gray)
                 .frame(width: 8, height: 8)
         }
+        .tag(tv.id)
         .listRowBackground(
             isSelected
-                ? RoundedRectangle(cornerRadius: 5).fill(Color.accentColor)
+                ? RoundedRectangle(cornerRadius: 5)
+                    .fill(Color.accentColor)
+                    .padding(.horizontal, 8)
                 : nil
         )
         .foregroundColor(isSelected ? .white : nil)

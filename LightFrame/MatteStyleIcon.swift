@@ -36,16 +36,10 @@ struct MatteStyleIcon: View {
         Color(NSColor.controlBackgroundColor).opacity(0.85)
     }
 
-    // Styles that crop the image to fill the matte window.
-    // Flexible and modern thin both crop — flexible has less border, modern thin more.
-    // Only shadowbox is a fit style (full photo visible).
+    // All matte styles crop to fill except none (which has no matte at all).
+    // Shadowbox crops to fill just like modern — the difference is the shadow effect.
     private var cropsFill: Bool {
-        switch style {
-        case .panoramic, .modern, .modernWide, .modernThin, .flexible:
-            return true
-        case .shadowbox, .none:
-            return false
-        }
+        style != .none
     }
 
     var body: some View {
@@ -118,63 +112,75 @@ struct MatteStyleIcon: View {
             )
         }
 
-        // Photo fill
-        let photoPath = Path(roundedRect: photoRect, cornerRadius: 1)
-        context.fill(photoPath, with: .color(photoFill))
-
         // Style-specific overlay
         if style == .shadowbox {
             drawShadowbox(context: context, photoRect: photoRect)
         } else {
             drawBevel(context: context, photoRect: photoRect, w: w)
         }
-    }
 
-    // MARK: - Shadowbox Effect
-    // Photo floats above matte, casting a shadow on all sides.
-    // Draw concentric dark rects around the photo to simulate a soft shadow.
+        // Photo fill (drawn after shadowbox so shadow appears behind photo)
+        let photoPath = Path(roundedRect: photoRect, cornerRadius: 1)
+        context.fill(photoPath, with: .color(photoFill))
 
-    private func drawShadowbox(context: GraphicsContext, photoRect: CGRect) {
-        let spread: CGFloat = max(2, size * 0.025)
-        let steps = 3
-
-        for i in (1...steps).reversed() {
-            let f = CGFloat(i) / CGFloat(steps)
-            let inset = -spread * f
-            let shadowRect = photoRect.insetBy(dx: inset, dy: inset)
-            let opacity = 0.15 * (1 - f) + 0.05
-            context.fill(Path(shadowRect), with: .color(Color.black.opacity(opacity)))
+        // Inner hairline for bevel styles — the sharp edge where mat meets photo
+        if style != .shadowbox {
+            let hairline: CGFloat = 0.5
+            let hairlinePath = Path(CGRect(
+                x: photoRect.minX, y: photoRect.minY,
+                width: photoRect.width, height: photoRect.height
+            ))
+            context.stroke(hairlinePath, with: .color(Color.black.opacity(0.20)),
+                           style: StrokeStyle(lineWidth: hairline))
         }
     }
 
+    // MARK: - Shadowbox Effect
+    // Photo floats above matte, casting a well-defined drop shadow DOWN onto the matte.
+    // Rendered as a dark rect offset down/right behind the photo with blur.
+
+    private func drawShadowbox(context: GraphicsContext, photoRect: CGRect) {
+        let offsetX: CGFloat = max(1, size * 0.015)
+        let offsetY: CGFloat = max(2, size * 0.03)
+        let blur: CGFloat = max(2, size * 0.025)
+
+        let shadowRect = photoRect.offsetBy(dx: offsetX, dy: offsetY)
+        let shadowPath = Path(roundedRect: shadowRect, cornerRadius: 1)
+
+        var shadowCtx = context
+        shadowCtx.addFilter(.blur(radius: blur))
+        shadowCtx.fill(shadowPath, with: .color(Color.black.opacity(0.50)))
+    }
+
     // MARK: - Bevel Effect
-    // Exposed paper core of the mat board — a solid warm cream/white strip
-    // around all four sides of the photo opening. Brighter on top/left,
-    // slightly darker on bottom/right.
+    // Simulates a 45° mat board cut showing the paper core.
+    // Top/left faces catch light (bright), bottom/right in shadow (darker).
+    // A subtle outer edge line where bevel meets the matte surface adds definition.
 
     private func drawBevel(context: GraphicsContext, photoRect: CGRect, w: CGFloat) {
         let b = max(1.5, w * 0.02)
         let r = photoRect
 
-        // Paper core — near-white so it contrasts against light mattes
+        // Paper core colors — warm white for light-catching faces, slightly gray for shadow faces
         let coreLight = Color.white
-        let coreShadow = Color(white: 0.88)
+        let coreShadow = Color(white: 0.85)
 
         // Outer edge line where bevel meets matte surface
-        let edgeThickness: CGFloat = max(0.5, b * 0.3)
-        let outerEdge = Color.black.opacity(0.15)
+        let edgeThickness: CGFloat = max(0.5, b * 0.25)
+        let outerEdge = Color.black.opacity(0.12)
+        let outerEdgeShadow = Color.black.opacity(0.18)
 
-        // Outer edge lines
+        // Outer edge lines (drawn first, behind bevel faces)
         context.fill(Path(CGRect(x: r.minX - b, y: r.minY - b, width: r.width + 2 * b, height: edgeThickness)),
                      with: .color(outerEdge))
         context.fill(Path(CGRect(x: r.minX - b, y: r.minY - b, width: edgeThickness, height: r.height + 2 * b)),
                      with: .color(outerEdge))
         context.fill(Path(CGRect(x: r.minX - b, y: r.maxY + b - edgeThickness, width: r.width + 2 * b, height: edgeThickness)),
-                     with: .color(Color.black.opacity(0.20)))
+                     with: .color(outerEdgeShadow))
         context.fill(Path(CGRect(x: r.maxX + b - edgeThickness, y: r.minY - b, width: edgeThickness, height: r.height + 2 * b)),
-                     with: .color(Color.black.opacity(0.20)))
+                     with: .color(outerEdgeShadow))
 
-        // Top bevel — bright paper core
+        // Top bevel — bright paper core (catches light)
         var topPath = Path()
         topPath.move(to: CGPoint(x: r.minX - b, y: r.minY - b))
         topPath.addLine(to: CGPoint(x: r.maxX + b, y: r.minY - b))
@@ -183,7 +189,7 @@ struct MatteStyleIcon: View {
         topPath.closeSubpath()
         context.fill(topPath, with: .color(coreLight.opacity(0.95)))
 
-        // Left bevel — bright paper core
+        // Left bevel — bright paper core (catches light)
         var leftPath = Path()
         leftPath.move(to: CGPoint(x: r.minX - b, y: r.minY - b))
         leftPath.addLine(to: CGPoint(x: r.minX, y: r.minY))
