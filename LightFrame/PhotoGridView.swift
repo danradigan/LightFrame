@@ -933,6 +933,10 @@ class ScanTVEngine: ObservableObject, Identifiable {
     @Published var matchedCount: Int = 0
     @Published var unmatchedCount: Int = 0
     @Published var downloadedCount: Int = 0
+    @Published var removedCount: Int = 0
+    @Published var addedCount: Int = 0
+    @Published var photosProcessed: Int = 0
+    @Published var totalPhotosToProcess: Int = 0
     @Published var isComplete: Bool = false
     @Published var isCancelled: Bool = false
     @Published var errorMessage: String? = nil
@@ -940,6 +944,11 @@ class ScanTVEngine: ObservableObject, Identifiable {
     var downloadProgress: Double {
         guard unmatchedCount > 0 else { return 0 }
         return Double(downloadedCount) / Double(unmatchedCount)
+    }
+
+    var reconcileProgress: Double {
+        guard totalPhotosToProcess > 0 else { return 0 }
+        return Double(photosProcessed) / Double(totalPhotosToProcess)
     }
 
     private let tvManager: TVConnectionManager
@@ -969,11 +978,22 @@ class ScanTVEngine: ObservableObject, Identifiable {
                 tvItemByID[item.id] = item
             }
 
-            // Reconcile local photos across ALL collections with TV state
-            var matched = 0
+            // Reconcile local photos across ALL collections with TV state.
+            // Collect all mutations into batches to avoid publishing @Published
+            // changes from within SwiftUI view updates.
             let allPhotos = collections.flatMap { $0.photos }
+            totalPhotosToProcess = allPhotos.count
+            statusMessage = "Reconciling \(allPhotos.count) local photo(s)..."
 
-            for photo in allPhotos {
+            // Batch: (updatedPhoto, collection) pairs to apply at the end
+            var photoUpdates: [(Photo, Collection)] = []
+            var syncUploads: [(String, String, Matte?)] = []  // (filename, contentID, matte)
+            var syncDeletions: [String] = []  // filenames to remove from sync store
+            var localMatched = 0
+            var localAdded = 0
+            var localRemoved = 0
+
+            for (i, photo) in allPhotos.enumerated() {
                 guard let collection = collections.first(where: { col in
                     col.photos.contains(where: { $0.id == photo.id })
                 }) else { continue }
@@ -983,20 +1003,21 @@ class ScanTVEngine: ObservableObject, Identifiable {
                         if !photo.isOnTV {
                             var p = photo
                             p.isOnTV = true
-                            appState.updatePhotoInPlace(p, in: collection)
+                            photoUpdates.append((p, collection))
+                            localAdded += 1
                         }
-                        // Update SyncStore record with source tracking
                         if syncStore.records[photo.filename] == nil {
-                            syncStore.recordUpload(filename: photo.filename, tvContentID: knownID, matte: photo.matte)
+                            syncUploads.append((photo.filename, knownID, photo.matte))
                         }
-                        matched += 1
+                        localMatched += 1
                     } else {
                         if photo.isOnTV {
                             var p = photo
                             p.isOnTV = false
                             p.tvContentID = nil
-                            appState.updatePhotoInPlace(p, in: collection)
-                            syncStore.recordDeletion(filename: photo.filename)
+                            photoUpdates.append((p, collection))
+                            syncDeletions.append(photo.filename)
+                            localRemoved += 1
                         }
                     }
                 } else if let syncRecord = syncStore.records[photo.filename] {
@@ -1004,15 +1025,44 @@ class ScanTVEngine: ObservableObject, Identifiable {
                         var p = photo
                         p.tvContentID = syncRecord.tvContentID
                         p.isOnTV = true
-                        appState.updatePhotoInPlace(p, in: collection)
-                        matched += 1
+                        photoUpdates.append((p, collection))
+                        localMatched += 1
+                        localAdded += 1
                     } else {
-                        syncStore.recordDeletion(filename: photo.filename)
+                        syncDeletions.append(photo.filename)
+                        localRemoved += 1
                     }
+                }
+
+                // Update progress periodically (every 50 photos) to keep UI responsive
+                // without flooding SwiftUI with per-photo @Published updates
+                if (i + 1) % 50 == 0 || i == allPhotos.count - 1 {
+                    photosProcessed = i + 1
+                    matchedCount = localMatched
+                    addedCount = localAdded
+                    removedCount = localRemoved
+                    await Task.yield()
                 }
             }
 
-            matchedCount = matched
+            // Apply all SyncStore mutations
+            for (filename, contentID, matte) in syncUploads {
+                syncStore.recordUpload(filename: filename, tvContentID: contentID, matte: matte)
+            }
+            for filename in syncDeletions {
+                syncStore.recordDeletion(filename: filename)
+            }
+
+            // Apply all photo updates to AppState in one pass
+            for (photo, collection) in photoUpdates {
+                appState.updatePhotoInPlace(photo, in: collection)
+            }
+
+            // Final counts
+            matchedCount = localMatched
+            addedCount = localAdded
+            removedCount = localRemoved
+            photosProcessed = allPhotos.count
 
             // Find TV-only items (not matched to any local file)
             let knownContentIDs = Set(allPhotos.compactMap { $0.tvContentID })
@@ -1061,8 +1111,12 @@ class ScanTVEngine: ObservableObject, Identifiable {
             // Mark full sync complete
             syncStore.markFullSync()
 
+            // Refresh AppState's cached sync store data so sidebar count
+            // and "Photos on TV" view reflect the updated state.
+            appState.refreshSyncStoreCache()
+
             statusMessage = "Scan complete"
-            print("📺 TV Scan: \(tvPhotoCount) on TV, \(matched) matched, \(unmatchedIDs.count) TV-only")
+            print("📺 TV Scan: \(tvPhotoCount) on TV, \(matchedCount) matched, \(removedCount) removed, \(addedCount) added, \(unmatchedIDs.count) TV-only")
 
         } catch {
             errorMessage = error.localizedDescription
@@ -1113,36 +1167,7 @@ struct ScanTVModal: View {
                             .font(.system(size: 44))
                             .foregroundColor(.green)
 
-                        VStack(spacing: 6) {
-                            HStack {
-                                Image(systemName: "tv.fill").foregroundColor(.blue).frame(width: 20)
-                                Text("Photos on TV")
-                                Spacer()
-                                Text("\(engine.tvPhotoCount)").fontWeight(.semibold).monospacedDigit()
-                            }
-                            .font(.subheadline)
-
-                            HStack {
-                                Image(systemName: "checkmark.circle.fill").foregroundColor(.green).frame(width: 20)
-                                Text("Matched to local files")
-                                Spacer()
-                                Text("\(engine.matchedCount)").fontWeight(.semibold).monospacedDigit()
-                            }
-                            .font(.subheadline)
-
-                            if engine.unmatchedCount > 0 {
-                                HStack {
-                                    Image(systemName: "icloud.and.arrow.down").foregroundColor(.orange).frame(width: 20)
-                                    Text("TV-only (thumbnails downloaded)")
-                                    Spacer()
-                                    Text("\(engine.downloadedCount)").fontWeight(.semibold).monospacedDigit()
-                                }
-                                .font(.subheadline)
-                            }
-                        }
-                        .padding()
-                        .background(Color(NSColor.controlBackgroundColor))
-                        .cornerRadius(8)
+                        scanStatsView
                     }
                 } else {
                     // In progress
@@ -1159,8 +1184,19 @@ struct ScanTVModal: View {
                         }
                         ProgressView(value: engine.downloadProgress)
                             .progressViewStyle(.linear)
+                    } else if engine.totalPhotosToProcess > 0 {
+                        // Reconciliation phase — show live counters
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(engine.statusMessage)
+                                .font(.subheadline)
+                                .foregroundColor(.secondary)
+                        }
+                        ProgressView(value: engine.reconcileProgress)
+                            .progressViewStyle(.linear)
+
+                        scanStatsView
                     } else {
-                        // Querying / matching phase — spinner
+                        // Querying TV phase — spinner
                         ProgressView()
                             .scaleEffect(1.2)
                         Text(engine.statusMessage)
@@ -1188,5 +1224,58 @@ struct ScanTVModal: View {
             .padding(.vertical, 16)
         }
         .frame(width: 380)
+    }
+
+    private var scanStatsView: some View {
+        VStack(spacing: 6) {
+            HStack {
+                Image(systemName: "tv.fill").foregroundColor(.blue).frame(width: 20)
+                Text("Photos on TV")
+                Spacer()
+                Text("\(engine.tvPhotoCount)").fontWeight(.semibold).monospacedDigit()
+            }
+            .font(.subheadline)
+
+            HStack {
+                Image(systemName: "checkmark.circle.fill").foregroundColor(.green).frame(width: 20)
+                Text("Matched")
+                Spacer()
+                Text("\(engine.matchedCount)").fontWeight(.semibold).monospacedDigit()
+            }
+            .font(.subheadline)
+
+            if engine.addedCount > 0 {
+                HStack {
+                    Image(systemName: "plus.circle.fill").foregroundColor(.blue).frame(width: 20)
+                    Text("Newly linked")
+                    Spacer()
+                    Text("\(engine.addedCount)").fontWeight(.semibold).monospacedDigit()
+                }
+                .font(.subheadline)
+            }
+
+            if engine.removedCount > 0 {
+                HStack {
+                    Image(systemName: "minus.circle.fill").foregroundColor(.red).frame(width: 20)
+                    Text("Removed")
+                    Spacer()
+                    Text("\(engine.removedCount)").fontWeight(.semibold).monospacedDigit()
+                }
+                .font(.subheadline)
+            }
+
+            if engine.unmatchedCount > 0 {
+                HStack {
+                    Image(systemName: "icloud.and.arrow.down").foregroundColor(.orange).frame(width: 20)
+                    Text("TV-only")
+                    Spacer()
+                    Text("\(engine.downloadedCount)").fontWeight(.semibold).monospacedDigit()
+                }
+                .font(.subheadline)
+            }
+        }
+        .padding()
+        .background(Color(NSColor.controlBackgroundColor))
+        .cornerRadius(8)
     }
 }
