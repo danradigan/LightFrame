@@ -125,7 +125,7 @@ class SamsungArtService: ObservableObject {
     func fetchCurrentArtwork() async throws -> SamsungArtParser.InnerMessage {
         let conn = try requireConnection()
         let params = SamsungArtProtocol.getCurrentArtwork()
-        return try await conn.sendCommand(params, waitForEvent: nil, timeout: 5)
+        return try await conn.sendCommand(params, waitForEvent: nil, timeout: 15)
     }
 
     // MARK: - Select Image
@@ -135,7 +135,7 @@ class SamsungArtService: ObservableObject {
     func selectImage(contentID: String, category: String? = nil, show: Bool = true) async throws {
         let conn = try requireConnection()
         let params = SamsungArtProtocol.selectImage(contentID: contentID, category: category, show: show)
-        _ = try await conn.sendCommand(params, waitForEvent: nil, timeout: 5)
+        _ = try await conn.sendCommand(params, waitForEvent: nil, timeout: 15)
     }
 
     // MARK: - Delete
@@ -195,14 +195,14 @@ class SamsungArtService: ObservableObject {
     func setSlideshowStatus(durationMinutes: Int, shuffle: Bool) async throws {
         let conn = try requireConnection()
         let params = SamsungArtProtocol.setSlideshowStatus(durationMinutes: durationMinutes, shuffle: shuffle)
-        _ = try await conn.sendCommand(params, waitForEvent: nil, timeout: 5)
+        _ = try await conn.sendCommand(params, waitForEvent: nil, timeout: 15)
     }
 
     // Python: get_slideshow_status()
     func fetchSlideshowStatus() async throws -> SlideshowStatus {
         let conn = try requireConnection()
         let params = SamsungArtProtocol.getSlideshowStatus()
-        let inner = try await conn.sendCommand(params, waitForEvent: nil, timeout: 5)
+        let inner = try await conn.sendCommand(params, waitForEvent: nil, timeout: 15)
 
         let value = inner.raw["value"] as? String ?? "off"
         let type = inner.raw["type"] as? String ?? ""
@@ -218,7 +218,7 @@ class SamsungArtService: ObservableObject {
     func fetchArtmodeStatus() async throws -> Bool {
         let conn = try requireConnection()
         let params = SamsungArtProtocol.getArtmodeStatus()
-        let inner = try await conn.sendCommand(params, waitForEvent: nil, timeout: 5)
+        let inner = try await conn.sendCommand(params, waitForEvent: nil, timeout: 15)
         return (inner.raw["value"] as? String) == "on"
     }
 
@@ -229,10 +229,10 @@ class SamsungArtService: ObservableObject {
     func fetchAPIVersion() async throws -> String {
         let conn = try requireConnection()
         do {
-            let inner = try await conn.sendCommand(SamsungArtProtocol.getAPIVersion(useNewAPI: true), waitForEvent: nil, timeout: 5)
+            let inner = try await conn.sendCommand(SamsungArtProtocol.getAPIVersion(useNewAPI: true), waitForEvent: nil, timeout: 15)
             return inner.raw["version"] as? String ?? "unknown"
         } catch {
-            let inner = try await conn.sendCommand(SamsungArtProtocol.getAPIVersion(useNewAPI: false), waitForEvent: nil, timeout: 5)
+            let inner = try await conn.sendCommand(SamsungArtProtocol.getAPIVersion(useNewAPI: false), waitForEvent: nil, timeout: 15)
             return inner.raw["version"] as? String ?? "unknown"
         }
     }
@@ -244,7 +244,7 @@ class SamsungArtService: ObservableObject {
     func fetchDeviceInfo() async throws -> [String: Any] {
         let conn = try requireConnection()
         let params = SamsungArtProtocol.getDeviceInfo()
-        let inner = try await conn.sendCommand(params, waitForEvent: nil, timeout: 5)
+        let inner = try await conn.sendCommand(params, waitForEvent: nil, timeout: 15)
         return inner.raw
     }
 
@@ -255,7 +255,7 @@ class SamsungArtService: ObservableObject {
     func fetchMatteList() async throws -> (styles: [[String: Any]], colors: [[String: Any]]?) {
         let conn = try requireConnection()
         let params = SamsungArtProtocol.getMatteList()
-        let inner = try await conn.sendCommand(params, waitForEvent: nil, timeout: 5)
+        let inner = try await conn.sendCommand(params, waitForEvent: nil, timeout: 15)
 
         let styles: [[String: Any]]
         if let str = inner.raw["matte_type_list"] as? String,
@@ -374,7 +374,7 @@ class SamsungArtService: ObservableObject {
     ) async throws -> String {
         let conn = try requireConnection()
 
-        // Step 1: Send send_image command
+        // Build send_image params
         let (sendParams, uploadUUID) = SamsungArtProtocol.sendImage(
             fileType: fileType,
             fileSize: imageData.count,
@@ -384,13 +384,14 @@ class SamsungArtService: ObservableObject {
 
         logHandler?("📤 Upload: send_image (\(imageData.count) bytes, type=\(fileType), uuid=\(uploadUUID.prefix(8)))")
 
-        // Python: wait_for_event="ready_to_use"
-        // We wait for the UUID match, which should be the ready_to_use response
+        // Python: self.pending_requests[request_data["id"]] = asyncio.Future()
+        //         await self.send_command(...)
+        //         return await self.wait_for_response(request_data["id"], timeout)
         let readyResponse = try await conn.sendCommand(sendParams, waitForEvent: nil, timeout: 30)
 
         try Task.checkCancellation()
 
-        // Step 2: Parse conn_info
+        // Parse conn_info from ready_to_use response
         guard let connInfo = SamsungArtParser.parseConnInfo(from: readyResponse),
               let secKey = connInfo.key
         else {
@@ -399,11 +400,11 @@ class SamsungArtService: ObservableObject {
 
         logHandler?("📡 Upload TCP → \(connInfo.ip):\(connInfo.port) secured=\(connInfo.secured)")
 
-        // Step 3: Open TCP socket
+        // Python: reader, writer = await asyncio.open_connection(ip, port, ssl=ssl_context)
         let tcpConnection = try await conn.openTCPSocket(connInfo: connInfo)
 
-        // Step 4: Send header
-        // Python: header = json.dumps({num, total, fileLength, fileName, fileType, secKey, version})
+        // Python: writer.write(len(header).to_bytes(4, "big"))
+        //         writer.write(header.encode("ascii"))
         let headerDict = SamsungArtProtocol.uploadHeader(
             fileSize: imageData.count,
             fileType: fileType,
@@ -416,14 +417,12 @@ class SamsungArtService: ObservableObject {
             throw SamsungArtError.encodingFailed("Could not encode upload header")
         }
 
-        // Python: art_socket.send(len(header).to_bytes(4, "big"))
         let lengthPrefix = withUnsafeBytes(of: UInt32(headerBytes.count).bigEndian) { Data($0) }
         try await conn.tcpSend(connection: tcpConnection, data: lengthPrefix + headerBytes, isComplete: false)
 
         logHandler?("📡 Upload header sent (\(headerBytes.count) bytes)")
 
-        // Step 5: Send image data in 64KB chunks
-        // Python: for chunk in chunker(file): art_socket.send(chunk)
+        // Python: async for chunk in chunker(file): writer.write(chunk); await writer.drain()
         let chunkSize = 64 * 1024
         var offset = 0
         while offset < imageData.count {
@@ -437,13 +436,23 @@ class SamsungArtService: ObservableObject {
 
         logHandler?("📡 Upload: all bytes sent (\(imageData.count) bytes) — waiting for image_added")
 
-        // Step 6: Wait for image_added event
-        // Python: data = self.wait_for_response("image_added")
-        // Nick's code uses no timeout (waits indefinitely). We use 300s as a safety net.
+        // Python: writer.close()
+        //         data = await self.wait_for_response("image_added", timeout=timeout)
+        //
+        // Nick closes the writer (graceful FIN) then waits for image_added.
+        // NWConnection.cancel() is a hard RST, not a graceful close, so we
+        // wait for the TV to confirm receipt FIRST, then tear down the socket.
         let addedResponse = try await conn.waitForEvent("image_added", timeout: 300)
-
         tcpConnection.cancel()
 
+        // Python: if data and data.get("event", "*") == "error": raise ResponseError(...)
+        if addedResponse.isError {
+            let reqName = addedResponse.errorRequestName ?? "send_image"
+            let code = addedResponse.errorCode ?? "unknown"
+            throw SamsungArtError.tvError(request: reqName, errorCode: code)
+        }
+
+        // Python: return data["content_id"] if data else None
         guard let contentID = addedResponse.raw["content_id"] as? String else {
             throw SamsungArtError.uploadFailed("image_added response missing content_id")
         }

@@ -13,6 +13,7 @@ struct ContentView: View {
     // Toast confirmation state
     @State private var toastMessage: String = ""
     @State private var showToast: Bool = false
+    @State private var toastIsError: Bool = false
 
     var isConnected: Bool {
         tvManager.isConnected
@@ -83,6 +84,7 @@ struct ContentView: View {
                     Text("Slideshow:")
                         .font(.caption)
                         .foregroundColor(.secondary)
+                        .fixedSize()
 
                     // Order toggle
                     Picker("", selection: $tvManager.currentSlideshowOrder) {
@@ -97,7 +99,10 @@ struct ContentView: View {
                         guard !tvManager.isSyncingSlideshow else { return }
                         Task {
                             let success = await tvManager.setSlideshowOrder(tvManager.currentSlideshowOrder)
-                            if success { showConfirmation("Order set to \(tvManager.currentSlideshowOrder.displayName)") }
+                            showConfirmation(
+                                success ? tvManager.currentSlideshowOrder.displayName : "Failed to set order",
+                                isError: !success
+                            )
                         }
                     }
 
@@ -113,7 +118,10 @@ struct ContentView: View {
                         guard !tvManager.isSyncingSlideshow else { return }
                         Task {
                             let success = await tvManager.setSlideshowInterval(tvManager.currentSlideshowInterval)
-                            if success { showConfirmation("Interval set to \(tvManager.currentSlideshowInterval.displayName)") }
+                            showConfirmation(
+                                success ? tvManager.currentSlideshowInterval.displayName : "Failed to set interval",
+                                isError: !success
+                            )
                         }
                     }
                 }
@@ -122,8 +130,8 @@ struct ContentView: View {
                 // Toast confirmation
                 if showToast {
                     HStack(spacing: 4) {
-                        Image(systemName: "checkmark.circle.fill")
-                            .foregroundColor(.green)
+                        Image(systemName: toastIsError ? "xmark.circle.fill" : "checkmark.circle.fill")
+                            .foregroundColor(toastIsError ? .red : .green)
                             .font(.caption)
                         Text(toastMessage)
                             .font(.caption)
@@ -156,11 +164,12 @@ struct ContentView: View {
         return parts.joined(separator: " \u{00B7} ")
     }
 
-    private func showConfirmation(_ message: String) {
+    private func showConfirmation(_ message: String, isError: Bool = false) {
         toastMessage = message
+        toastIsError = isError
         withAnimation { showToast = true }
         Task {
-            try? await Task.sleep(nanoseconds: 2_500_000_000)
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
             withAnimation { showToast = false }
         }
     }

@@ -277,49 +277,39 @@ class UploadEngine: ObservableObject, Identifiable {
         print("📦 Uploading \(photo.filename): \(imageData.count / 1024)KB as \(fileType)")
 
         // Upload to TV — TVConnectionManager handles matte fallback automatically.
-        // Auto-retry once on timeout (TV may be slow processing large files).
-        var lastError: Error?
-        for attempt in 1...2 {
-            do {
-                if attempt > 1 {
-                    print("🔄 Retrying \(photo.filename) (attempt \(attempt))")
+        // No automatic retry: if upload fails after TCP transfer, the image may already
+        // be on the TV. Retrying would create duplicates. This matches Nick's Python
+        // where upload() is called once with no retry wrapper.
+        do {
+            let (contentID, confirmedMatte) = try await tvManager.uploadPhoto(
+                imageData: imageData,
+                fileType: fileType,
+                matte: photo.matte
+            )
+
+            // Record the upload in SyncStore so future scans know it's on the TV
+            syncStore.recordUpload(
+                filename: photo.filename,
+                tvContentID: contentID,
+                matte: confirmedMatte
+            )
+
+            // Update the photo in AppState so the grid dot turns green immediately
+            appState.setContentID(contentID, for: photo, in: item.collection)
+
+            // If the matte fell back, update model to match what the TV actually got
+            if confirmedMatte != photo.matte {
+                if let confirmed = confirmedMatte {
+                    appState.updateMatte(confirmed, for: photo, newData: nil)
                 }
-
-                let (contentID, confirmedMatte) = try await tvManager.uploadPhoto(
-                    imageData: imageData,
-                    fileType: fileType,
-                    matte: photo.matte
-                )
-
-                // Record the upload in SyncStore so future scans know it's on the TV
-                syncStore.recordUpload(
-                    filename: photo.filename,
-                    tvContentID: contentID,
-                    matte: confirmedMatte
-                )
-
-                // Update the photo in AppState so the grid dot turns green immediately
-                appState.setContentID(contentID, for: photo, in: item.collection)
-
-                // If the matte fell back, update model to match what the TV actually got
-                if confirmedMatte != photo.matte {
-                    if let confirmed = confirmedMatte {
-                        appState.updateMatte(confirmed, for: photo, newData: nil)
-                    }
-                }
-
-                items[index].state = .done
-                return
-
-            } catch {
-                lastError = error
-                // Only retry on timeout — other errors (rejected matte, etc.) won't benefit
-                let isTimeout = error.localizedDescription.contains("timed out")
-                if !isTimeout || attempt == 2 { break }
             }
-        }
 
-        items[index].state = .failed(lastError?.localizedDescription ?? "Upload failed")
+            items[index].state = .done
+
+        } catch {
+            print("❌ FAILED \(photo.filename): \(error)")
+            items[index].state = .failed(error.localizedDescription)
+        }
     }
 
     // MARK: - Duplicate Resolution Logic
