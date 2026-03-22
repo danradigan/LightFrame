@@ -22,6 +22,7 @@ protocol ArtConnectionProtocol: Actor {
         timeout: TimeInterval
     ) async throws -> SamsungArtParser.InnerMessage
 
+    func clearEarlyEvents()
     func setLogHandler(_ handler: ((String) -> Void)?)
 
     var isConnected: Bool { get }

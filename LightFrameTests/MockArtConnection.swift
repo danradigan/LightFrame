@@ -124,6 +124,8 @@ actor MockArtConnection: ArtConnectionProtocol {
 
     var currentToken: String? { token }
 
+    func clearEarlyEvents() {}
+
     func setLogHandler(_ handler: ((String) -> Void)?) {
         logHandler = handler
     }

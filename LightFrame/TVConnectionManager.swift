@@ -290,7 +290,10 @@ class TVConnectionManager: ObservableObject {
     }
 
     // MARK: - Upload Photo (with matte fallback)
-    // If upload fails and a non-none matte is set, retries with fallback mattes.
+    // If the TV rejects the matte (tvError), retries with fallback mattes.
+    // Only tvError triggers fallback — timeouts, connection failures, etc. are
+    // NOT matte rejections and must not re-upload (which would create duplicates).
+    // This matches Nick's Python where upload() has no retry logic at all.
     // Returns (contentID, confirmedMatte) so callers can update their model.
     func uploadPhoto(imageData: Data, fileType: String, matte: Matte?) async throws -> (contentID: String, confirmedMatte: Matte?) {
         let originalMatte = matte
@@ -305,9 +308,20 @@ class TVConnectionManager: ObservableObject {
                 portraitMatteID: matteToken
             )
             return (contentID, originalMatte)
-        } catch {
+        } catch let error as SamsungArtError {
+            // Only retry on tvError (TV explicitly rejected — e.g. matte not supported).
+            // Timeouts, connection failures, etc. mean the image may already be
+            // on the TV — retrying would create duplicates.
+            guard case .tvError(let req, let code) = error else {
+                artService.logHandler?("❌ Upload failed (non-tvError): \(error.localizedDescription ?? "unknown")")
+                throw error
+            }
+
+            artService.logHandler?("❌ TV rejected upload: request=\(req) error_code=\(code)")
+
             // If no matte or matte is "none", no fallback to try
             guard let original = originalMatte, original.style != .none else {
+                artService.logHandler?("❌ No matte fallback available (matte=\(originalMatte?.apiToken ?? "nil"))")
                 throw error
             }
 
@@ -327,7 +341,11 @@ class TVConnectionManager: ObservableObject {
                         portraitMatteID: fallback.apiToken
                     )
                     return (contentID, fallback)
-                } catch {
+                } catch let fallbackError as SamsungArtError {
+                    // Only continue fallback chain on tvError
+                    guard case .tvError = fallbackError else {
+                        throw fallbackError
+                    }
                     continue
                 }
             }

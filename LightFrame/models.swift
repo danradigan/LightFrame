@@ -6,11 +6,11 @@ import SwiftUI
 // These string values must match exactly what the Samsung Frame TV API expects.
 enum MatteStyle: String, CaseIterable, Codable {
     case none       = "none"
-    case modern     = "modern"
-    case modernThin = "modernthin"
-    case modernWide = "modernwide"
-    case flexible   = "flexible"
     case shadowbox  = "shadowbox"
+    case flexible   = "flexible"
+    case modernThin = "modernthin"
+    case modern     = "modern"
+    case modernWide = "modernwide"
     case panoramic  = "panoramic"
 
     var displayName: String {

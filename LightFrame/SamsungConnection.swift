@@ -314,21 +314,28 @@ actor SamsungConnection: ArtConnectionProtocol {
 
         let subEvent = inner.event
         let requestID = inner.requestID
-        log("📩 d2d sub_event=\(subEvent) request_id=\(requestID ?? "nil")")
+        let pendingKeys = Array(pendingRequests.keys)
+
+        if inner.isError {
+            log("📩 d2d sub_event=\(subEvent) request_id=\(requestID ?? "nil") error_code=\(inner.errorCode ?? "?") request=\(inner.errorRequestName ?? "?") raw=\(inner.raw)")
+        } else {
+            log("📩 d2d sub_event=\(subEvent) request_id=\(requestID ?? "nil")")
+        }
 
         // Python: first check request_id match, then check sub_event match
         if let rid = requestID, let cont = pendingRequests.removeValue(forKey: rid) {
+            log("✅ Matched by request_id: \(rid)")
             cont.resume(returning: inner)
             return
         }
 
         if let cont = pendingRequests.removeValue(forKey: subEvent) {
+            log("✅ Matched by sub_event: \(subEvent)")
             cont.resume(returning: inner)
             return
         }
 
-        // No pending request matched — this is a broadcast (artmode_status, etc.)
-        log("📩 Unmatched d2d event: \(subEvent)")
+        log("📩 Unmatched d2d event: \(subEvent) (pending keys: \(pendingKeys))")
     }
 
     // MARK: - Fail All Pending
@@ -422,21 +429,37 @@ actor SamsungConnection: ArtConnectionProtocol {
     // Used by upload to wait for image_added after the TCP transfer completes.
     // Python: wait_for_response("image_added", timeout=timeout)
     //
+    // Nonce per event name — used to prevent stale timeout tasks from
+    // killing a newer waitForEvent call that reuses the same key.
+    private var pendingNonces: [String: String] = [:]
+
     func waitForEvent(_ eventName: String, timeout: TimeInterval) async throws -> SamsungArtParser.InnerMessage {
+        let nonce = UUID().uuidString
+        pendingNonces[eventName] = nonce
+
+        log("⏳ waitForEvent(\(eventName)) registering (timeout=\(Int(timeout))s, nonce=\(nonce.prefix(8)))")
         return try await withCheckedThrowingContinuation { continuation in
             pendingRequests[eventName] = continuation
 
-            Task { [weak self] in
+            Task { [weak self, nonce] in
                 try? await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
                 guard let self else { return }
+                // Only fire if OUR nonce is still current. If a newer waitForEvent
+                // registered a new nonce, this timeout is stale — do nothing.
+                guard await self.pendingNonces[eventName] == nonce else { return }
                 if let cont = await self.removePending(key: eventName) {
-                    cont.resume(throwing: SamsungArtError.timeout("waitForEvent(\(eventName)) timed out"))
+                    await self.log("⏰ waitForEvent(\(eventName)) TIMED OUT after \(Int(timeout))s")
+                    cont.resume(throwing: SamsungArtError.timeout("waitForEvent(\(eventName)) timed out after \(Int(timeout))s"))
                 }
             }
         }
     }
 
+
+
     // MARK: - Log Handler Setter
+    func clearEarlyEvents() {}
+
     func setLogHandler(_ handler: ((String) -> Void)?) {
         self.logHandler = handler
     }

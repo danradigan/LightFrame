@@ -211,6 +211,7 @@ struct PhotoDetailView: View {
                 updated.isOnTV = false
                 updated.tvContentID = nil
                 appState.updatePhotoInPlace(updated, in: collection)
+                appState.refreshSyncStoreCache()
 
                 saveMessage = "✓ Removed from TV"
                 try? await Task.sleep(nanoseconds: 2_000_000_000)
@@ -620,6 +621,7 @@ struct TVOnlyDetailView: View {
                 }
                 appState.tvOnlyItems.removeAll { $0.id == item.id }
                 appState.lastTappedTVOnlyItem = nil
+                appState.refreshSyncStoreCache()
                 statusMessage = "✓ Removed"
             } catch {
                 let msg = error.localizedDescription

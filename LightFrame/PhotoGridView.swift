@@ -656,7 +656,7 @@ struct UploadControlsView: View {
                 Button {
                     Task { await appState.scanSelectedCollection() }
                 } label: {
-                    Label("Scan Folder", systemImage: "folder.badge.arrow.down")
+                    Label("Scan Folder", systemImage: "arrow.down.doc")
                 }
                 .disabled(appState.selectedCollection == nil || appState.isScanning)
                 .help("Rescan collection folder")
@@ -800,6 +800,8 @@ class DeleteEngine: ObservableObject, Identifiable {
             }
         }
 
+        appState.refreshSyncStoreCache()
+
         // Delete TV-only items (no local file)
         for item in tvOnlyItems {
             guard !isCancelled else { break }
@@ -815,6 +817,7 @@ class DeleteEngine: ObservableObject, Identifiable {
                 try await tvManager.deletePhotos(contentIDs: [item.id])
                 syncStore.removeTVOnlyItem(contentID: item.id)
                 appState.tvOnlyItems.removeAll { $0.id == item.id }
+                appState.refreshSyncStoreCache()
                 completedCount += 1
             } catch {
                 let errMsg = error.localizedDescription
