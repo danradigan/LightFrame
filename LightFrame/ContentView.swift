@@ -20,18 +20,19 @@ struct ContentView: View {
     }
 
     var body: some View {
-        NavigationSplitView(columnVisibility: $columnVisibility) {
-            SidebarView()
-                .navigationSplitViewColumnWidth(min: 200, ideal: 220, max: 260)
-        } content: {
-            PhotoGridView()
-                .navigationSplitViewColumnWidth(min: 400, ideal: 600)
-                .safeAreaInset(edge: .bottom, spacing: 0) {
-                    footerBar
-                }
-        } detail: {
-            DetailPanel()
-                .navigationSplitViewColumnWidth(min: 300, ideal: 380, max: 580)
+        VStack(spacing: 0) {
+            NavigationSplitView(columnVisibility: $columnVisibility) {
+                SidebarView()
+                    .navigationSplitViewColumnWidth(min: 200, ideal: 220, max: 260)
+            } content: {
+                PhotoGridView()
+                    .navigationSplitViewColumnWidth(min: 400, ideal: 600)
+            } detail: {
+                DetailPanel()
+                    .navigationSplitViewColumnWidth(min: 300, ideal: 380, max: 580)
+            }
+
+            footerBar
         }
         .environmentObject(tvManager)
         .onAppear {
