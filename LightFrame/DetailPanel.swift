@@ -82,49 +82,58 @@ struct PhotoDetailView: View {
 
                 Divider()
 
-                // MARK: Action Buttons
+                // MARK: Action Toolbar
+                // All 4 buttons always present — unavailable ones dim to keep shape stable
                 VStack(spacing: 8) {
+                    HStack(spacing: 0) {
+                        // Display / Update / Send
+                        IconToolbarButton(
+                            icon: photo.isOnTV ? "play.display" : "square.and.arrow.up",
+                            label: photo.isOnTV ? (hasChanges ? "Update" : "Display") : "Send",
+                            tint: .accentColor,
+                            isDisabled: !isConnected || isApplying,
+                            isLoading: isApplying,
+                            tooltip: photo.isOnTV
+                                ? (hasChanges ? "Apply matte changes and display on TV" : "Display this photo on TV")
+                                : "Upload this photo to TV"
+                        ) { photo.isOnTV ? applyAndDisplay() : sendToTV() }
 
-                    // Display on TV — updates matte if changed, then displays
-                    if photo.isOnTV {
-                        Button { applyAndDisplay() } label: {
-                            HStack {
-                                if isApplying { ProgressView().scaleEffect(0.7) }
-                                Text(isApplying ? "Applying..." : (hasChanges ? "Update & Display on TV" : "Display on TV"))
-                            }
-                            .frame(maxWidth: .infinity)
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .disabled(!isConnected || isApplying)
-                    }
+                        // Save Matte to File
+                        IconToolbarButton(
+                            icon: "square.and.arrow.down",
+                            label: "Save",
+                            isDisabled: !hasChanges || isSaving || !photo.isJPEG,
+                            isLoading: isSaving,
+                            tooltip: "Save matte to file EXIF metadata"
+                        ) { saveMatte() }
 
-                    // Save Matte — writes the matte choice into the file's EXIF only
-                    Button { saveMatte() } label: {
-                        HStack {
-                            if isSaving { ProgressView().scaleEffect(0.7) }
-                            Text(isSaving ? "Saving..." : "Save Matte to File")
-                        }
-                        .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(.bordered)
-                    .disabled(!hasChanges || isSaving || !photo.isJPEG)
+                        // Re-send to TV
+                        IconToolbarButton(
+                            icon: "arrow.clockwise",
+                            label: "Re-send",
+                            isDisabled: !isConnected || !photo.isOnTV,
+                            tooltip: "Re-upload this photo to TV"
+                        ) { sendToTV() }
 
-                    // Send to TV — uploads this single photo via the upload modal
-                    Button { sendToTV() } label: {
-                        Text(photo.isOnTV ? "Re-send to TV" : "Send to TV")
-                            .frame(maxWidth: .infinity)
+                        // Remove from TV
+                        IconToolbarButton(
+                            icon: "trash",
+                            label: "Remove",
+                            tint: .red,
+                            isDisabled: !isConnected || !photo.isOnTV,
+                            tooltip: "Remove this photo from TV"
+                        ) { removeFromTV() }
                     }
-                    .buttonStyle(.bordered)
-                    .disabled(!isConnected)
-
-                    // Remove from TV — deletes the photo from the TV's art library
-                    if photo.isOnTV {
-                        Button(role: .destructive) { removeFromTV() } label: {
-                            Text("Remove from TV").frame(maxWidth: .infinity)
-                        }
-                        .buttonStyle(.bordered)
-                        .disabled(!isConnected)
-                    }
+                    .padding(.vertical, 6)
+                    .padding(.horizontal, 8)
+                    .background(
+                        RoundedRectangle(cornerRadius: 8)
+                            .fill(Color(NSColor.controlBackgroundColor))
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 8)
+                            .stroke(Color.primary.opacity(0.08), lineWidth: 0.5)
+                    )
 
                     if let message = saveMessage {
                         Text(message)
@@ -138,7 +147,6 @@ struct PhotoDetailView: View {
                             .foregroundColor(.secondary)
                     }
 
-                    // Matte error banner — shown when the TV rejects a matte change
                     if let error = matteError {
                         MatteErrorBanner(message: error) {
                             matteError = nil
@@ -467,29 +475,39 @@ struct TVOnlyDetailView: View {
 
                 Divider()
 
-                // MARK: Actions
+                // MARK: Action Toolbar
                 VStack(spacing: 8) {
-                    // Display on TV — updates matte if changed, then displays
-                    Button { applyAndDisplay() } label: {
-                        HStack {
-                            if isApplying { ProgressView().scaleEffect(0.7) }
-                            Text(isApplying ? "Applying..." : (hasMatteChanges ? "Update & Display on TV" : "Display on TV"))
-                        }
-                        .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(!isConnected || isApplying)
+                    HStack(spacing: 0) {
+                        // Display / Update on TV
+                        IconToolbarButton(
+                            icon: "play.display",
+                            label: hasMatteChanges ? "Update" : "Display",
+                            tint: .accentColor,
+                            isDisabled: !isConnected || isApplying,
+                            isLoading: isApplying,
+                            tooltip: hasMatteChanges ? "Apply matte changes and display on TV" : "Display this photo on TV"
+                        ) { applyAndDisplay() }
 
-                    // Remove from TV
-                    Button(role: .destructive) { removeFromTV() } label: {
-                        HStack {
-                            if isDeleting { ProgressView().scaleEffect(0.7) }
-                            Text(isDeleting ? "Removing..." : "Remove from TV")
-                        }
-                        .frame(maxWidth: .infinity)
+                        // Remove from TV
+                        IconToolbarButton(
+                            icon: "trash",
+                            label: "Remove",
+                            tint: .red,
+                            isDisabled: !isConnected || isDeleting,
+                            isLoading: isDeleting,
+                            tooltip: "Remove this photo from TV"
+                        ) { removeFromTV() }
                     }
-                    .buttonStyle(.bordered)
-                    .disabled(!isConnected || isDeleting)
+                    .padding(.vertical, 6)
+                    .padding(.horizontal, 8)
+                    .background(
+                        RoundedRectangle(cornerRadius: 8)
+                            .fill(Color(NSColor.controlBackgroundColor))
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 8)
+                            .stroke(Color.primary.opacity(0.08), lineWidth: 0.5)
+                    )
 
                     if let msg = statusMessage {
                         Text(msg)
@@ -497,7 +515,6 @@ struct TVOnlyDetailView: View {
                             .foregroundColor(msg.contains("✓") ? .green : .red)
                     }
 
-                    // Matte error banner — shown when the TV rejects a matte change
                     if let error = matteError {
                         MatteErrorBanner(message: error) {
                             matteError = nil

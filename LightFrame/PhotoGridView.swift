@@ -634,55 +634,60 @@ struct UploadControlsView: View {
         return false
     }
 
-    // Count of photos not yet on the TV (what "Upload All" will act on)
     var notOnTVCount: Int {
         appState.filteredPhotos.filter { !$0.isOnTV }.count
     }
 
-    // Count of selected photos that are on the TV (what "Remove from TV" will act on)
     var selectedOnTVCount: Int {
         appState.selectedPhotos.filter { $0.isOnTV }.count + appState.selectedTVOnlyItemIDs.count
     }
 
     var body: some View {
-        HStack(spacing: 8) {
-            // Scan TV button — always available when a TV is selected
-            Button("Scan TV") {
-                onScanTV()
+        HStack(spacing: 4) {
+            // Scan TV
+            Button { onScanTV() } label: {
+                Label("Scan TV", systemImage: "arrow.triangle.2.circlepath")
             }
             .disabled(!isConnected || appState.isScanning || appState.selectedTV == nil)
+            .help("Scan TV art library")
 
             if !isPhotosOnTV {
-                // Scan folder
-                Button("Scan Folder") {
+                // Scan Folder
+                Button {
                     Task { await appState.scanSelectedCollection() }
+                } label: {
+                    Label("Scan Folder", systemImage: "folder.badge.arrow.down")
                 }
                 .disabled(appState.selectedCollection == nil || appState.isScanning)
+                .help("Rescan collection folder")
 
-                // Upload buttons
-                if hasSelection {
-                    Button("Upload Selected (\(appState.selectedPhotoIDs.count))") {
-                        onUploadSelected()
-                    }
-                    .disabled(!isConnected)
-                }
+                Divider().frame(height: 16)
 
-                if notOnTVCount > 0 {
-                    Button("Upload All (\(notOnTVCount))") {
-                        onUploadAll()
-                    }
-                    .disabled(!isConnected)
+                // Upload Selected
+                Button { onUploadSelected() } label: {
+                    Label(hasSelection ? "Upload (\(appState.selectedPhotoIDs.count))" : "Upload", systemImage: "square.and.arrow.up")
                 }
+                .disabled(!isConnected || !hasSelection)
+                .help("Upload selected photos to TV")
+                .tint(.accentColor)
+
+                // Upload All
+                Button { onUploadAll() } label: {
+                    Label("All (\(notOnTVCount))", systemImage: "square.and.arrow.up.on.square")
+                }
+                .disabled(!isConnected || notOnTVCount == 0)
+                .help("Upload all photos not yet on TV")
             }
 
-            // "Remove from TV" shows when selected photos are on the TV
+            // Remove from TV
             if selectedOnTVCount > 0 {
-                Button(role: .destructive) {
-                    onDeleteSelected()
-                } label: {
-                    Text("Remove from TV (\(selectedOnTVCount))")
+                Divider().frame(height: 16)
+
+                Button(role: .destructive) { onDeleteSelected() } label: {
+                    Label("Remove (\(selectedOnTVCount))", systemImage: "tv.slash")
                 }
                 .disabled(!isConnected)
+                .help("Remove selected photos from TV")
             }
         }
         .buttonStyle(.bordered)
